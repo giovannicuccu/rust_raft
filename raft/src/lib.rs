@@ -1,10 +1,11 @@
-use network::*;
-
+pub mod network;
+pub mod common;
 use crate::ServerState::Follower;
+use crate::common::*;
+use crate::network::*;
+use std::time::Instant;
+use rand::prelude::*;
 
-type TermType = u32;
-type IndexType= u32;
-type CandidateIdType = u16;
 
 const NO_TERM : TermType = 0;
 const NO_CANDIDATE_ID : CandidateIdType = 0;
@@ -44,12 +45,19 @@ struct ServerPersistentState {
 struct ServerVolatileState {
     commit_index: IndexType,
     last_applied: IndexType,
+    last_heartbeat_time: Instant,
+}
+
+struct ServerConfig {
+    election_timeout_min: u32,
+    election_timeout_max: u32,
 }
 
 /*
 Leader State specificato nel protocollo si applica solo se il server è di tipo Leader
 Rust consente di specificare degli enum con valori diversi per cui uso questa potenzialità
  */
+#[derive(PartialEq, PartialOrd)]
 enum ServerState {
     Leader {
         next_index:Vec<IndexType>,
@@ -63,6 +71,7 @@ struct RaftServer<S: ServerChannel, C:ClientChannel> {
     persistent_state: ServerPersistentState,
     volatile_state: ServerVolatileState,
     server_state: ServerState,
+    config: ServerConfig,
     other_servers_in_cluster: Vec<String>,
     clients_for_servers_in_cluster: Vec<C>,
     server_channel: S,
@@ -72,13 +81,10 @@ fn discover_other_nodes_in_cluster() -> Vec<String> {
     Vec::new()
 }
 
-pub fn on_request_vote1() {
-
-}
 
 impl <S: ServerChannel, C:ClientChannel>RaftServer<S,C> {
 
-    pub fn new<N: NetworkChannel<S,C>>(network_channel:N) -> RaftServer<S,C> {
+    pub fn new<N: NetworkChannel<S,C>>(server_config: ServerConfig, network_channel:N) -> RaftServer<S,C> {
         let other_nodes_in_cluster=discover_other_nodes_in_cluster();
         let server_channel=network_channel.server_channel();
         let clients=other_nodes_in_cluster.iter().map(|address|network_channel.client_channel(address)).collect();
@@ -91,8 +97,10 @@ impl <S: ServerChannel, C:ClientChannel>RaftServer<S,C> {
             volatile_state: ServerVolatileState {
                 commit_index:NO_VALUE,
                 last_applied:NO_VALUE,
+                last_heartbeat_time: Instant::now(),
             },
             server_state: Follower,
+            config: server_config,
             /*
             Perchè la cosa abbia un senso devo fare discover dei server del cluster
             all'avvio del server -> uso un metodo per fare discovery dei nodi
@@ -102,17 +110,37 @@ impl <S: ServerChannel, C:ClientChannel>RaftServer<S,C> {
             clients_for_servers_in_cluster: clients,
             server_channel,
         };
-        raft_server.install_hndlers();
+        raft_server.install_handlers();
         raft_server
     }
 
-    fn install_hndlers(&self) {
-        let callback = || self.on_request_vote();
+    fn install_handlers(&self) {
+        let callback = |request_vote_request| self.on_request_vote(request_vote_request);
         self.server_channel.handle_request_vote(callback);
     }
 
-    pub fn on_request_vote(&self) {
+    fn on_request_vote(&self,request_vote_request: RequestVoteRequest) -> RequestVoteResponse {
+        if request_vote_request.term()<self.persistent_state.current_term {
+            return RequestVoteResponse::new(NO_TERM,false);
+        }
+        if (self.persistent_state.voted_for==NO_CANDIDATE_ID || self.persistent_state.voted_for==request_vote_request.candidate_id()) &&
+            //verificare se è meglio ottenere il valore di last con getOrElse o qualcosa del genere
+            self.persistent_state.log.last().is_some() && self.persistent_state.log.last().unwrap().index<=request_vote_request.last_log_index() {
+            return RequestVoteResponse::new(request_vote_request.term(),true);
+        }
+        RequestVoteResponse::new(0,false)
+    }
 
+    pub fn start(&self) {
+        if self.server_state==Follower {
+            let now=Instant::now();
+            let mut rng = thread_rng();
+            let election_timeout: u32 = rng.gen_range(self.config.election_timeout_min..self.config.election_timeout_max);
+            if now.duration_since(self.volatile_state.last_heartbeat_time).as_millis()>= election_timeout as u128 {
+                //il timeout è random fra due range da definire--
+                //Avviare la richiesta di voto
+            }
+        }
     }
 }
 
