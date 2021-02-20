@@ -12,6 +12,15 @@ pub struct RequestVoteRequest {
 }
 
 impl RequestVoteRequest {
+    pub fn new(term: TermType, candidate_id: CandidateIdType,last_log_index: IndexType, last_log_term: TermType) -> RequestVoteRequest {
+        RequestVoteRequest{
+            term,
+            candidate_id,
+            last_log_index,
+            last_log_term,
+        }
+    }
+
     pub fn term(&self) -> TermType {
         self.term
     }
@@ -36,5 +45,8 @@ impl RequestVoteResponse {
             term,
             vote_granted
         }
+    }
+    pub fn vote_granted(&self) -> bool {
+        self.vote_granted
     }
 }

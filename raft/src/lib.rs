@@ -5,6 +5,8 @@ use crate::common::*;
 use crate::network::*;
 use std::time::Instant;
 use rand::prelude::*;
+use std::ops::Range;
+use std::borrow::Borrow;
 
 
 const NO_TERM : TermType = 0;
@@ -24,7 +26,7 @@ struct StateMachineCommand {
 
 struct LogEntry {
     index: IndexType,
-    term_id: TermType,
+    term: TermType,
     state_machine_command: StateMachineCommand,
 }
 
@@ -49,8 +51,16 @@ struct ServerVolatileState {
 }
 
 struct ServerConfig {
+    //usare un range
+    id: CandidateIdType,
     election_timeout_min: u32,
     election_timeout_max: u32,
+}
+
+impl ServerConfig {
+    pub fn id(&self)-> CandidateIdType {
+        self.id
+    }
 }
 
 /*
@@ -64,7 +74,7 @@ enum ServerState {
         match_index:Vec<IndexType>,
     },
     Follower,
-    Candidate
+    Candidate,
 }
 
 struct RaftServer<S: ServerChannel, C:ClientChannel> {
@@ -132,14 +142,28 @@ impl <S: ServerChannel, C:ClientChannel>RaftServer<S,C> {
     }
 
     pub fn start(&self) {
-        if self.server_state==Follower {
-            let now=Instant::now();
-            let mut rng = thread_rng();
-            let election_timeout: u32 = rng.gen_range(self.config.election_timeout_min..self.config.election_timeout_max);
-            if now.duration_since(self.volatile_state.last_heartbeat_time).as_millis()>= election_timeout as u128 {
+        //Questo va fatto in un thread a parte perchè deve essere in esecuzione sempre
+        match self.server_state {
+            ServerState::Follower => {
+                let now = Instant::now();
+                let mut rng = thread_rng();
+                let election_timeout: u32 = rng.gen_range(self.config.election_timeout_min..=self.config.election_timeout_max);
+                if now.duration_since( self.volatile_state.last_heartbeat_time).as_millis() >= election_timeout as u128 {
                 //il timeout è random fra due range da definire--
                 //Avviare la richiesta di voto
+                }
             }
+            _ => { ()}
+        }
+    }
+
+    fn send_requests_vote(&self) {
+        let last_log_index=self.persistent_state.log.last().unwrap().index;
+        let last_log_term=self.persistent_state.log.last().unwrap().term;
+        for client_channel in self.clients_for_servers_in_cluster.iter() {
+            let request_vote_response=client_channel.send_request_vote(
+            RequestVoteRequest::new(self.persistent_state.current_term, self.config.id(),last_log_index, last_log_term));
+            println!("vote response {}",request_vote_response.vote_granted())
         }
     }
 }
