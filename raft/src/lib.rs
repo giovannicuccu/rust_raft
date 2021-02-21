@@ -50,7 +50,7 @@ struct ServerVolatileState {
     last_heartbeat_time: Instant,
 }
 
-struct ServerConfig {
+pub struct ServerConfig {
     //usare un range
     id: CandidateIdType,
     election_timeout_min: u32,
@@ -77,14 +77,14 @@ enum ServerState {
     Candidate,
 }
 
-struct RaftServer<S: ServerChannel, C:ClientChannel> {
+pub struct RaftServer<C:ClientChannel> {
     persistent_state: ServerPersistentState,
     volatile_state: ServerVolatileState,
     server_state: ServerState,
     config: ServerConfig,
     other_servers_in_cluster: Vec<String>,
     clients_for_servers_in_cluster: Vec<C>,
-    server_channel: S,
+    //server_channel: S,
 }
 
 fn discover_other_nodes_in_cluster() -> Vec<String> {
@@ -92,13 +92,13 @@ fn discover_other_nodes_in_cluster() -> Vec<String> {
 }
 
 
-impl <S: ServerChannel, C:ClientChannel>RaftServer<S,C> {
+impl <C:ClientChannel>RaftServer<C> {
 
-    pub fn new<N: NetworkChannel<S,C>>(server_config: ServerConfig, network_channel:N) -> RaftServer<S,C> {
+    pub fn new<N: NetworkChannel<Client=C>>(server_config: ServerConfig, network_channel:N) -> RaftServer<C> {
         let other_nodes_in_cluster=discover_other_nodes_in_cluster();
-        let server_channel=network_channel.server_channel();
-        let clients=other_nodes_in_cluster.iter().map(|address|network_channel.client_channel(address)).collect();
-        let raft_server= RaftServer {
+        //let server_channel=network_channel.server_channel();
+        let clients=other_nodes_in_cluster.iter().map(|address|network_channel.client_channel(String::from(address))).collect();
+        RaftServer {
             persistent_state: ServerPersistentState {
                 current_term:NO_TERM,
                 voted_for:NO_CANDIDATE_ID,
@@ -118,18 +118,11 @@ impl <S: ServerChannel, C:ClientChannel>RaftServer<S,C> {
             other_servers_in_cluster: other_nodes_in_cluster,
 
             clients_for_servers_in_cluster: clients,
-            server_channel,
-        };
-        raft_server.install_handlers();
-        raft_server
+        }
+
     }
 
-    fn install_handlers(&self) {
-        let callback = |request_vote_request| self.on_request_vote(request_vote_request);
-        self.server_channel.handle_request_vote(callback);
-    }
-
-    fn on_request_vote(&self,request_vote_request: RequestVoteRequest) -> RequestVoteResponse {
+    pub fn on_request_vote(&self,request_vote_request: RequestVoteRequest) -> RequestVoteResponse {
         if request_vote_request.term()<self.persistent_state.current_term {
             return RequestVoteResponse::new(NO_TERM,false);
         }

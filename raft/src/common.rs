@@ -32,6 +32,10 @@ impl RequestVoteRequest {
     pub fn last_log_index(&self) -> IndexType {
         self.last_log_index
     }
+
+    pub fn last_log_term(&self) -> TermType {
+        self.last_log_term
+    }
 }
 
 pub struct RequestVoteResponse {
@@ -45,6 +49,9 @@ impl RequestVoteResponse {
             term,
             vote_granted
         }
+    }
+    pub fn term(&self) -> TermType {
+        self.term
     }
     pub fn vote_granted(&self) -> bool {
         self.vote_granted
