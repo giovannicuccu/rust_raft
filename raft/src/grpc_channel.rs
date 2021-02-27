@@ -5,14 +5,41 @@ use raft_rpc::raft_rpc_server::{RaftRpc,RaftRpcServer};
 use raft_rpc::{RequestVoteRpcReply, RequestVoteRpcRequest};
 use raft::network::{ServerChannel, ClientChannel, NetworkChannel};
 use raft::common::{RequestVoteRequest, RequestVoteResponse, CandidateIdType};
-use raft::RaftServer;
+use raft::{RaftServer, ServerConfig};
+use tokio::runtime::Runtime;
 
 pub mod raft_rpc {
     tonic::include_proto!("raft_rpc"); // The string specified here must match the proto package name
 }
 
 pub struct RaftRPCServerImpl {
-    raftServer: RaftServer<RaftRPCClientImpl>,
+    raft_server: RaftServer<RaftRPCClientImpl>,
+}
+
+impl RaftRPCServerImpl {
+
+    pub fn new (server_config: ServerConfig) -> RaftRPCServerImpl {
+        RaftRPCServerImpl {
+            raft_server: RaftServer::new(server_config, RaftRpcNetworkChannel {}),
+        }
+    }
+
+    pub fn start(server_config: ServerConfig) {
+        let addr_str=format!("127.0.0.1:{}",server_config.server_port());
+        println!("addr_str={}",addr_str);
+        let addr = addr_str.parse().unwrap();
+        let raft_rpc_server_impl = RaftRPCServerImpl::new(server_config);
+        //è da mettere qui perchè questa RaftRpcServer::new(raft_rpc_server_impl) fa il borrow
+        raft_rpc_server_impl.raft_server.start();
+        println!(" after raft_server start");
+        let mut rt = Runtime::new().expect("failed to obtain a new RunTime object");
+        let server_future = Server::builder()
+            .add_service(RaftRpcServer::new(raft_rpc_server_impl))
+            .serve(addr);
+        rt.block_on(server_future).expect("failed to successfully run the future on RunTime");
+        println!(" server with addr={} started",addr_str);
+
+    }
 }
 
 #[tonic::async_trait]
@@ -30,7 +57,7 @@ impl RaftRpc for RaftRPCServerImpl {
             request_obj.last_log_index,
             request_obj.last_log_term,
         );
-        let response=self.raftServer.on_request_vote(request_in);
+        let response=self.raft_server.on_request_vote(request_in);
         let reply = raft_rpc::RequestVoteRpcReply {
             term: response.term(),
             vote_granted: response.vote_granted(),
@@ -85,6 +112,7 @@ impl ClientChannel for RaftRPCClientImpl {
     fn send_request_vote(&self, request_vote_request: RequestVoteRequest) -> RequestVoteResponse {
         let mut rt = tokio::runtime::Runtime::new().unwrap();
         let response_result=rt.block_on(self.send_request_vote_async(request_vote_request));
+        //questo potrebbe non rispondere, gestire con un result
         response_result.ok().unwrap()
     }
 
