@@ -201,8 +201,5 @@ gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
         }
     }
 
-    pub fn server_config(&self) -> &ServerConfig {
-        &self.server_config()
-    }
 }
 
