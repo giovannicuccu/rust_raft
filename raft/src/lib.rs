@@ -1,13 +1,14 @@
 pub mod network;
 pub mod common;
-use crate::ServerState::Follower;
+use crate::ServerState::{Follower, Candidate};
 use crate::common::*;
 use crate::network::*;
 use std::time::Instant;
 use rand::prelude::*;
-use std::ops::Range;
+use std::ops::{Range, Deref};
 use std::borrow::Borrow;
 use std::{thread, time};
+use std::sync::{Arc, Mutex};
 
 
 const NO_INDEX : IndexType = 0;
@@ -111,7 +112,7 @@ enum ServerState {
 pub struct RaftServer<C:ClientChannel> {
     persistent_state: ServerPersistentState,
     volatile_state: ServerVolatileState,
-    server_state: ServerState,
+    server_state: Mutex<ServerState>,
     config: ServerConfig,
     clients_for_servers_in_cluster: Vec<C>,
     //server_channel: S,
@@ -138,7 +139,7 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
                 last_applied:NO_VALUE,
                 last_heartbeat_time: Instant::now(),
             },
-            server_state: Follower,
+            server_state: Mutex::new(Follower),
             config: server_config,
             /*
             Perchè la cosa abbia un senso devo fare discover dei server del cluster
@@ -162,29 +163,56 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
         RequestVoteResponse::new(NO_TERM,false)
     }
 
-    pub fn start(&self) {
+    pub fn manage_server_state(&self) {
+        /*
+        Nel nuovo desing questo gestisce le richieste di cambio stato da follower a candidate,etc
+         */
+
         //Questo va fatto in un thread a parte perchè deve essere in esecuzione sempre
-        //thread::spawn(|| {
-            match self.server_state {
+        /*
+        una possibile soluzione è qui
+        https://users.rust-lang.org/t/how-to-use-self-while-spawning-a-thread-from-method/8282/3
+        ragionare su cosa fare
+
+         */
+
+        //let thread_server_state=self.server_state.clone();
+        //thread::spawn(move || {
+        let mut count = 0u32;
+        loop {
+            count+=1;
+            let mut mutex_guard = self.server_state.lock().unwrap();
+            //let mut inner_server_state=self.server_state.lock().unwrap();
+            //let server_state: &ServerState = match mutex_guard {
+            match *mutex_guard {
                 ServerState::Follower => {
-                    println!(" start ServerState::Follower");
+                    println!(" start ServerState::Follower id={}",self.config.id);
                     let now = Instant::now();
                     let mut rng = thread_rng();
                     let election_timeout: u32 = rng.gen_range(self.config.election_timeout_min..=self.config.election_timeout_max);
                     if now.duration_since(self.volatile_state.last_heartbeat_time).as_millis() >= election_timeout as u128 {
                         //il timeout è random fra due range da definire--
                         //Avviare la richiesta di voto
-                        self.send_requests_vote();
+                        *mutex_guard = Candidate;
                     } else {
-                        println!(" start ServerState::Follower before sleep");
+                        println!(" start ServerState::Follower before sleep id={}",self.config.id);
                         thread::sleep(time::Duration::from_millis(self.config.election_timeout_max as u64));
-                        println!(" start ServerState::Follower after sleep");
-                        self.start();
+                        println!(" start ServerState::Follower after sleep id={}",self.config.id);
+                        //self.start();
                     }
+                }
+                ServerState::Candidate =>{
+                    println!(" start ServerState::Candidate id={}",self.config.id);
+                    self.send_requests_vote();
                 }
                 _ => { () }
             }
-        //});
+            println!("start count={} id={}",count, self.config.id);
+            if count==20 {
+                break;
+            }
+            //});
+        }
     }
 
     fn send_requests_vote(&self) {
@@ -203,13 +231,13 @@ gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
 
         }
         for client_channel in self.clients_for_servers_in_cluster.iter() {
-            println!(" before send_requests_vote rpc");
+            println!(" before send_requests_vote rpc id={}",self.config.id);
             let request_vote_response=client_channel.send_request_vote(
             RequestVoteRequest::new(self.persistent_state.current_term, self.config.id(),last_log_index, last_log_term));
            if (request_vote_response.is_ok()) {
                println!("vote response {}", request_vote_response.ok().unwrap().vote_granted())
            } else {
-               println!("vote response ko");
+               println!("vote response ko id={}",self.config.id);
            }
         }
     }

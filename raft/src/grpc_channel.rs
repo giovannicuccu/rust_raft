@@ -7,21 +7,28 @@ use raft::network::{ServerChannel, ClientChannel, NetworkChannel};
 use raft::common::{RequestVoteRequest, RequestVoteResponse, CandidateIdType};
 use raft::{RaftServer, ServerConfig};
 use tokio::runtime::Runtime;
+use std::sync::Arc;
+use std::thread;
+use std::ops::Deref;
 
 pub mod raft_rpc {
     tonic::include_proto!("raft_rpc"); // The string specified here must match the proto package name
 }
 
 pub struct RaftRPCServerImpl {
-    raft_server: RaftServer<RaftRPCClientImpl>,
+    raft_server: Arc<RaftServer<RaftRPCClientImpl>>,
 }
 
 impl RaftRPCServerImpl {
 
     pub fn new (server_config: ServerConfig) -> RaftRPCServerImpl {
         RaftRPCServerImpl {
-            raft_server: RaftServer::new(server_config, RaftRpcNetworkChannel {}),
+            raft_server: Arc::new(RaftServer::new(server_config, RaftRpcNetworkChannel {})),
         }
+    }
+
+    fn get_raft_server(&self) -> Arc<RaftServer<RaftRPCClientImpl>>{
+        self.raft_server.clone()
     }
 
     pub fn start(server_config: ServerConfig) {
@@ -30,7 +37,10 @@ impl RaftRPCServerImpl {
         let addr = addr_str.parse().unwrap();
         let raft_rpc_server_impl = RaftRPCServerImpl::new(server_config);
         //è da mettere qui perchè questa RaftRpcServer::new(raft_rpc_server_impl) fa il borrow
-        raft_rpc_server_impl.raft_server.start();
+        let raft_server_server_state= raft_rpc_server_impl.get_raft_server();
+        thread::spawn(move || {
+            raft_server_server_state.manage_server_state();
+        });
         println!(" after raft_server start");
         let mut rt = Runtime::new().expect("failed to obtain a new RunTime object");
         let server_future = Server::builder()
@@ -58,6 +68,9 @@ impl RaftRpc for RaftRPCServerImpl {
             request_obj.last_log_index,
             request_obj.last_log_term,
         );
+        /*
+        Questo continua a funzionare anche con Arc perchè evidentemente il compilatore è smart
+         */
         let response=self.raft_server.on_request_vote(request_in);
         let reply = raft_rpc::RequestVoteRpcReply {
             term: response.term(),
@@ -117,6 +130,7 @@ impl ClientChannel for RaftRPCClientImpl {
         return if response_result.is_ok() {
             Ok(response_result.ok().unwrap())
         } else {
+            println!("ko response: {:?}", response_result.err().unwrap().deref());
             Err(())
         }
     }
