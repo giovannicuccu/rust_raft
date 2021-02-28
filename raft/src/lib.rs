@@ -1,6 +1,6 @@
 pub mod network;
 pub mod common;
-use crate::ServerState::{Follower, Candidate};
+use crate::ServerState::{Follower, Candidate, Leader};
 use crate::common::*;
 use crate::network::*;
 use std::time::Instant;
@@ -56,7 +56,7 @@ Put e Delete con variabili di tipo Stringa sia per i nomi degli stati che per i 
 
 struct ServerPersistentState {
     current_term:TermType,
-    voted_for:CandidateIdType,
+    voted_for:Mutex<CandidateIdType>,
     log:Vec<LogEntry>,
 
 }
@@ -131,7 +131,7 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
         RaftServer {
             persistent_state: ServerPersistentState {
                 current_term:NO_TERM,
-                voted_for:NO_CANDIDATE_ID,
+                voted_for:Mutex::new(NO_CANDIDATE_ID),
                 log: Vec::new(),
             },
             volatile_state: ServerVolatileState {
@@ -153,13 +153,24 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
 
     pub fn on_request_vote(&self,request_vote_request: RequestVoteRequest) -> RequestVoteResponse {
         if request_vote_request.term()<self.persistent_state.current_term {
+            println!("on_request_vote granted ko minor term id={}",self.config.id);
             return RequestVoteResponse::new(NO_TERM,false);
         }
-        if (self.persistent_state.voted_for==NO_CANDIDATE_ID || self.persistent_state.voted_for==request_vote_request.candidate_id()) &&
+        let mut last_index=NO_INDEX;
+        if self.persistent_state.log.last().is_some() {
+            let last_index=self.persistent_state.log.last().unwrap().index;
+        }
+
+        let mut voted_for_guard=self.persistent_state.voted_for.lock().unwrap();
+        println!("on_request_vote voted_for={}, candidate={} term id={}",*voted_for_guard,request_vote_request.candidate_id(),self.config.id);
+        if (*voted_for_guard==NO_CANDIDATE_ID || *voted_for_guard==request_vote_request.candidate_id()) &&
             //verificare se è meglio ottenere il valore di last con getOrElse o qualcosa del genere
-            self.persistent_state.log.last().is_some() && self.persistent_state.log.last().unwrap().index<=request_vote_request.last_log_index() {
+            last_index<=request_vote_request.last_log_index() {
+            *voted_for_guard= request_vote_request.candidate_id() as u16;
+            println!("on_request_vote granted ok to {} id={}",*voted_for_guard, self.config.id);
             return RequestVoteResponse::new(request_vote_request.term(),true);
         }
+        println!("on_request_vote granted ko id={}",self.config.id);
         RequestVoteResponse::new(NO_TERM,false)
     }
 
@@ -195,15 +206,23 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
                         //Avviare la richiesta di voto
                         *mutex_guard = Candidate;
                     } else {
-                        println!(" start ServerState::Follower before sleep id={}",self.config.id);
+                        //println!(" start ServerState::Follower before sleep id={}",self.config.id);
                         thread::sleep(time::Duration::from_millis(self.config.election_timeout_max as u64));
-                        println!(" start ServerState::Follower after sleep id={}",self.config.id);
+                        //println!(" start ServerState::Follower after sleep id={}",self.config.id);
                         //self.start();
                     }
                 }
                 ServerState::Candidate =>{
-                    println!(" start ServerState::Candidate id={}",self.config.id);
-                    self.send_requests_vote();
+                    println!("start ServerState::Candidate id={}",self.config.id);
+                    if self.send_requests_vote() {
+                        *mutex_guard = Leader {
+                            next_index: vec![],
+                            match_index: vec![]
+                        };
+                    }
+                }
+                ServerState::Leader =>{
+                    println!("start ServerState::Leader id={}",self.config.id);
                 }
                 _ => { () }
             }
@@ -215,8 +234,8 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
         }
     }
 
-    fn send_requests_vote(&self) {
-        println!(" send_requests_vote start");
+    fn send_requests_vote(&self)-> bool {
+        //println!(" send_requests_vote start");
 /*
 TODO: capire come gestire lo start quando non ci sono entry e si deve chiedere una request vote
 gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
@@ -230,16 +249,24 @@ gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
             last_log_term=last_log_entry.term;
 
         }
+        let mut ok_votes=0u16;
         for client_channel in self.clients_for_servers_in_cluster.iter() {
-            println!(" before send_requests_vote rpc id={}",self.config.id);
+            //println!(" before send_requests_vote rpc id={}",self.config.id);
             let request_vote_response=client_channel.send_request_vote(
             RequestVoteRequest::new(self.persistent_state.current_term, self.config.id(),last_log_index, last_log_term));
            if (request_vote_response.is_ok()) {
-               println!("vote response {}", request_vote_response.ok().unwrap().vote_granted())
+
+               if request_vote_response.ok().unwrap().vote_granted() {
+                   println!("send_requests_vote vote response granted for id={}", self.config.id);
+                   ok_votes+=1;
+               }
+               println!("send_requests_vote vote response NOT granted for id={}", self.config.id);
            } else {
-               println!("vote response ko id={}",self.config.id);
+               println!("send_requests_vote vote response ko id={}",self.config.id);
            }
         }
+        println!("send_requests_vote result={} id={}",ok_votes>= ((self.config.other_nodes_in_cluster.len() / 2)+1) as u16,self.config.id);
+        ok_votes>= ((self.config.other_nodes_in_cluster.len() / 2)+1) as u16
     }
 
 }

@@ -59,7 +59,7 @@ impl RaftRpc for RaftRPCServerImpl {
         &self,
         request: Request<RequestVoteRpcRequest>,
     ) -> Result<Response<RequestVoteRpcReply>, Status> {
-        println!("Got a request: {:?}", request);
+        //println!("Got a request: {:?}", request);
 
         let request_obj=request.into_inner();
         let request_in=RequestVoteRequest::new(
