@@ -19,7 +19,7 @@ message RequestVoteRpcReply {
 }
 
 message AppendEntriesRpcRequest {
-    message Result {
+    message LogEntryRpc {
         uint32 index = 1;
         uint32 term = 2;
         enum CommandType {
@@ -34,8 +34,8 @@ message AppendEntriesRpcRequest {
     uint32 leader_id = 2;
     uint32 prev_log_index = 3;
     uint32 prev_log_term = 4;
-    repeated Result entries= 5 ;
-    uint32 leder_commit_term = 6;
+    repeated LogEntryRpc entries= 5 ;
+    uint32 leader_commit_term = 6;
 }
 
 message AppendEntriesRpcReply {

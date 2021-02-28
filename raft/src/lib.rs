@@ -16,22 +16,7 @@ const NO_TERM : TermType = 0;
 const NO_CANDIDATE_ID : CandidateIdType = 0;
 const NO_VALUE : IndexType = 0;
 
-enum CommandType {
-    Put,
-    Delete,
-}
 
-struct StateMachineCommand {
-    command_type: CommandType,
-    key: String,
-    value: String,
-}
-
-struct LogEntry {
-    index: IndexType,
-    term: TermType,
-    state_machine_command: StateMachineCommand,
-}
 
 
 /*
@@ -98,7 +83,7 @@ enum ServerState {
 
 pub struct RaftServer<C:ClientChannel> {
     persistent_state: ServerPersistentState,
-    volatile_state: ServerVolatileState,
+    volatile_state: Mutex<ServerVolatileState>,
     server_state: Mutex<ServerState>,
     config: ServerConfig,
     clients_for_servers_in_cluster: Vec<C>,
@@ -121,11 +106,11 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
                 voted_for:Mutex::new(NO_CANDIDATE_ID),
                 log: Vec::new(),
             },
-            volatile_state: ServerVolatileState {
+            volatile_state: Mutex::new(ServerVolatileState {
                 commit_index:NO_VALUE,
                 last_applied:NO_VALUE,
                 last_heartbeat_time: Instant::now(),
-            },
+            }),
             server_state: Mutex::new(Follower),
             config: server_config,
             /*
@@ -140,25 +125,44 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
 
     pub fn on_request_vote(&self,request_vote_request: RequestVoteRequest) -> RequestVoteResponse {
         if request_vote_request.term()<self.persistent_state.current_term {
-            println!("on_request_vote granted ko minor term id={}",self.config.id);
+            println!("id:{} - on_request_vote granted ko minor term",self.config.id);
             return RequestVoteResponse::new(NO_TERM,false);
         }
         let mut last_index=NO_INDEX;
         if self.persistent_state.log.last().is_some() {
-            let last_index=self.persistent_state.log.last().unwrap().index;
+            let last_index=self.persistent_state.log.last().unwrap().index();
         }
 
         let mut voted_for_guard=self.persistent_state.voted_for.lock().unwrap();
-        println!("on_request_vote voted_for={}, candidate={} term id={}",*voted_for_guard,request_vote_request.candidate_id(),self.config.id);
+        //println!("id:{} - on_request_vote voted_for={}, candidate={} term",*voted_for_guard,request_vote_request.candidate_id(),self.config.id);
         if (*voted_for_guard==NO_CANDIDATE_ID || *voted_for_guard==request_vote_request.candidate_id()) &&
             //verificare se è meglio ottenere il valore di last con getOrElse o qualcosa del genere
             last_index<=request_vote_request.last_log_index() {
             *voted_for_guard= request_vote_request.candidate_id() as u16;
-            println!("on_request_vote granted ok to {} id={}",*voted_for_guard, self.config.id);
+            println!("id:{} - on_request_vote granted ok to {}",*voted_for_guard, self.config.id);
             return RequestVoteResponse::new(request_vote_request.term(),true);
         }
-        println!("on_request_vote granted ko id={}",self.config.id);
+        println!("id:{} - on_request_vote granted ko",self.config.id);
         RequestVoteResponse::new(NO_TERM,false)
+    }
+
+    pub fn on_append_entries(&self,append_entries_request: AppendEntriesRequest) -> AppendEntriesResponse {
+        println!("id:{} - on_append_entries begin",self.config.id);
+        let mut mutex_guard = self.server_state.lock().unwrap();
+        println!("id:{} - on_append_entries got mutex",self.config.id);
+        match *mutex_guard {
+            ServerState::Leader { .. } => {}
+            Follower => {
+                println!("id:{} - on_append_entries ServerState::Follower",self.config.id);
+            }
+            Candidate => {
+                println!("id:{} - on_append_entries ServerState::Candidate",self.config.id);
+                *mutex_guard = Follower;
+                let mut mutex_volatile_state_guard = self.volatile_state.lock().unwrap();
+                mutex_volatile_state_guard.last_heartbeat_time=Instant::now();
+            }
+        }
+        AppendEntriesResponse::new(self.persistent_state.current_term,true)
     }
 
     pub fn manage_server_state(&self) {
@@ -177,9 +181,10 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
         //let thread_server_state=self.server_state.clone();
         //thread::spawn(move || {
         let mut count = 0u32;
+        let mut rng = thread_rng();
         loop {
             count+=1;
-            let mut mutex_guard = self.server_state.lock().unwrap();
+
             /*
             Qui ci va &*mutex_guard perchè volgio un riferimento a ServerState
             NON E' VERO
@@ -198,39 +203,49 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
             this means that the input expression is evaluated to a memory location where the value lives.
             match works by doing this evaluation and then inspecting the data at that memory location.
              */
+            let mut mutex_guard = self.server_state.lock().unwrap();
+            let now = Instant::now();
+
             match *mutex_guard {
                 ServerState::Follower => {
-                    println!(" start ServerState::Follower id={}",self.config.id);
-                    let now = Instant::now();
-                    let mut rng = thread_rng();
+                    println!("id:{} - start ServerState::Follower",self.config.id);
+                    let mut mutex_volatile_state_guard = self.volatile_state.lock().unwrap();
                     let election_timeout: u32 = rng.gen_range(self.config.election_timeout_min..=self.config.election_timeout_max);
-                    if now.duration_since(self.volatile_state.last_heartbeat_time).as_millis() >= election_timeout as u128 {
+                    if now.duration_since(mutex_volatile_state_guard.last_heartbeat_time).as_millis() >= election_timeout as u128 {
                         //il timeout è random fra due range da definire--
                         //Avviare la richiesta di voto
                         *mutex_guard = Candidate;
                     } else {
-                        //println!(" start ServerState::Follower before sleep id={}",self.config.id);
-                        thread::sleep(time::Duration::from_millis(self.config.election_timeout_max as u64));
-                        //println!(" start ServerState::Follower after sleep id={}",self.config.id);
-                        //self.start();
+                        thread::sleep(time::Duration::from_millis(election_timeout as u64));
                     }
                 }
                 ServerState::Candidate =>{
-                    println!("start ServerState::Candidate id={}",self.config.id);
+                    println!("id:{} - start ServerState::Candidate",self.config.id);
                     if self.send_requests_vote() {
                         *mutex_guard = Leader {
                             next_index: vec![],
                             match_index: vec![]
                         };
+                        let mut voted_for_guard=self.persistent_state.voted_for.lock().unwrap();
+                        *voted_for_guard=self.config.id;
+                    } else {
+                        let election_timeout: u32 = rng.gen_range(self.config.election_timeout_min..=self.config.election_timeout_max);
+                        thread::sleep(time::Duration::from_millis(election_timeout as u64));
                     }
                 }
+                //uso ref per non prendere la ownership
                 ServerState::Leader { ref next_index, ref match_index} =>{
-                    println!("start ServerState::Leader id={}",self.config.id);
+                    println!("id:{} - start ServerState::Leader",self.config.id);
+                    if self.send_append_entries() {
+
+                    }
                 }
                 _ => { () }
             }
-            println!("start count={} id={}",count, self.config.id);
-            if count==20 {
+            drop(mutex_guard);
+            thread::sleep(time::Duration::from_millis(10 as u64));
+            //println!("id:{} - start count={}",count, self.config.id);
+            if count==8 {
                 break;
             }
             //});
@@ -248,8 +263,8 @@ gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
         let last_log=self.persistent_state.log.last();
         if last_log.is_some() {
             let last_log_entry=self.persistent_state.log.last().unwrap();
-            last_log_index=last_log_entry.index;
-            last_log_term=last_log_entry.term;
+            last_log_index=last_log_entry.index();
+            last_log_term=last_log_entry.term();
 
         }
         let mut ok_votes=0u16;
@@ -257,18 +272,41 @@ gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
             //println!(" before send_requests_vote rpc id={}",self.config.id);
             let request_vote_response=client_channel.send_request_vote(
             RequestVoteRequest::new(self.persistent_state.current_term, self.config.id(),last_log_index, last_log_term));
-           if (request_vote_response.is_ok()) {
+           if request_vote_response.is_ok() {
 
                if request_vote_response.ok().unwrap().vote_granted() {
-                   println!("send_requests_vote vote response granted for id={}", self.config.id);
+                   //println!("id:{} - send_requests_vote vote response granted", self.config.id);
                    ok_votes+=1;
                }
-               println!("send_requests_vote vote response NOT granted for id={}", self.config.id);
+               //println!("id:{} - send_requests_vote vote response NOT granted", self.config.id);
            } else {
-               println!("send_requests_vote vote response ko id={}",self.config.id);
+               //println!("id:{} - send_requests_vote vote response ko",self.config.id);
            }
         }
-        println!("send_requests_vote result={} id={}",ok_votes>= ((self.config.other_nodes_in_cluster.len() / 2)+1) as u16,self.config.id);
+        println!("id:{} - send_requests_vote result={}",self.config.id, ok_votes>= ((self.config.other_nodes_in_cluster.len() / 2)+1) as u16);
+        ok_votes>= ((self.config.other_nodes_in_cluster.len() / 2)+1) as u16
+    }
+
+    fn send_append_entries(&self)-> bool {
+        println!("id:{} - send_append_entries",self.config.id);
+        let mut ok_votes=0u16;
+        for client_channel in self.clients_for_servers_in_cluster.iter() {
+            //println!(" before send_requests_vote rpc id={}",self.config.id);
+            let append_entries_response=client_channel.send_append_entries(
+                AppendEntriesRequest::new(self.persistent_state.current_term,
+                                          self.config.id(),1, 1,
+                vec![],0));
+            if append_entries_response.is_ok() {
+                if append_entries_response.ok().unwrap().success() {
+                    println!("id:{} - send_append_entries response succeded", self.config.id);
+                    ok_votes+=1;
+                }
+                println!("id:{} - send_append_entries response NOT succeded", self.config.id);
+            } else {
+                println!("id:{} - send_append_entries response ko",self.config.id);
+            }
+        }
+        println!("id:{} - send_append_entries result={}",self.config.id, ok_votes>= ((self.config.other_nodes_in_cluster.len() / 2)+1) as u16);
         ok_votes>= ((self.config.other_nodes_in_cluster.len() / 2)+1) as u16
     }
 

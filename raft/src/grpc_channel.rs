@@ -2,9 +2,11 @@ use tonic::{transport::Server, Request, Response, Status};
 use futures::{join, future};
 use raft_rpc::raft_rpc_client::{RaftRpcClient};
 use raft_rpc::raft_rpc_server::{RaftRpc,RaftRpcServer};
+
 use raft_rpc::{RequestVoteRpcReply, RequestVoteRpcRequest,AppendEntriesRpcRequest,AppendEntriesRpcReply};
+use raft_rpc::append_entries_rpc_request::{LogEntryRpc};
 use raft::network::{ServerChannel, ClientChannel, NetworkChannel};
-use raft::common::{RequestVoteRequest, RequestVoteResponse, CandidateIdType};
+use raft::common::{RequestVoteRequest, RequestVoteResponse, CandidateIdType, AppendEntriesResponse, AppendEntriesRequest, CommandType};
 use raft::{RaftServer, ServerConfig};
 use tokio::runtime::Runtime;
 use std::sync::Arc;
@@ -83,6 +85,16 @@ impl RaftRpc for RaftRPCServerImpl {
         &self,
         request: Request<AppendEntriesRpcRequest>,
     ) -> Result<Response<AppendEntriesRpcReply>, Status> {
+        let request_obj=request.into_inner();
+        let request_in=AppendEntriesRequest::new(
+            request_obj.term,
+            request_obj.leader_id as CandidateIdType,
+            request_obj.prev_log_index,
+            request_obj.prev_log_term,
+            vec![],
+            request_obj.leader_commit_term,
+        );
+        let response=self.raft_server.on_append_entries(request_in);
         let reply = raft_rpc::AppendEntriesRpcReply {
             term: 1,
             success: true,
@@ -130,6 +142,35 @@ impl RaftRPCClientImpl {
         let response=response_rpc.into_inner();
         Ok(RequestVoteResponse::new(response.term, response.vote_granted))
     }
+
+    async fn send_append_entries_async(&self, append_entries_request: AppendEntriesRequest) ->Result<AppendEntriesResponse, Box<dyn std::error::Error>>  {
+        let mut client = RaftRpcClient::connect(String::from(&self.address)).await?;
+
+        let log_entries_rpc=append_entries_request.entries().iter().map(|entry| LogEntryRpc {
+            index: entry.index(),
+            term: entry.term(),
+            command_type: match entry.state_machine_command().command_type() {
+                CommandType::Put => {0}
+                CommandType::Delete => {1}
+            },
+            /*
+            TODO capire se si può evitare il clone e come fare con le stringhe
+             */
+            key: entry.state_machine_command().key().clone(),
+            value: entry.state_machine_command().value().clone(),
+        }).collect();
+        let request = tonic::Request::new(AppendEntriesRpcRequest {
+            term: append_entries_request.term(),
+            leader_id: append_entries_request.leader_id() as u32,
+            prev_log_index: append_entries_request.prev_log_index(),
+            prev_log_term: append_entries_request.prev_log_term(),
+            entries: log_entries_rpc,
+            leader_commit_term: append_entries_request.leader_commit(),
+        });
+        let response_rpc=client.append_entries_rpc(request).await?;
+        let response=response_rpc.into_inner();
+        Ok(AppendEntriesResponse::new(response.term, response.success))
+    }
 }
 
 impl ClientChannel for RaftRPCClientImpl {
@@ -146,7 +187,18 @@ impl ClientChannel for RaftRPCClientImpl {
         }
     }
 
-
+    fn send_append_entries(&self, append_entries_request: AppendEntriesRequest) -> Result<AppendEntriesResponse, ()> {
+        let mut rt = tokio::runtime::Runtime::new().unwrap();
+        let response_result=rt.block_on(
+            self.send_append_entries_async(append_entries_request));
+        //questo potrebbe non rispondere, gestire con un result
+        return if response_result.is_ok() {
+            Ok(response_result.ok().unwrap())
+        } else {
+            println!("ko response: {:?}", response_result.err().unwrap().deref());
+            Err(())
+        }
+    }
 }
 
 pub struct RaftRpcNetworkChannel {

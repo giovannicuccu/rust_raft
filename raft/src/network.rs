@@ -1,4 +1,4 @@
-use crate::common::{RequestVoteRequest, RequestVoteResponse};
+use crate::common::{RequestVoteRequest, RequestVoteResponse, AppendEntriesRequest, AppendEntriesResponse};
 
 /*
 cerco qualcosa che sia chiaro e che leghi insieme i concetti di client e
@@ -14,6 +14,7 @@ pub trait ServerChannel {
 
 pub trait ClientChannel {
     fn send_request_vote(&self, request_vote_request: RequestVoteRequest)-> Result<RequestVoteResponse,()>;
+    fn send_append_entries(&self, append_entries_request: AppendEntriesRequest)-> Result<AppendEntriesResponse,()>;
 }
 /*
 questo sotto non è proprio corretto capire cosa fa veramente
