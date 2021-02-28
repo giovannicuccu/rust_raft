@@ -2,7 +2,7 @@ use tonic::{transport::Server, Request, Response, Status};
 use futures::{join, future};
 use raft_rpc::raft_rpc_client::{RaftRpcClient};
 use raft_rpc::raft_rpc_server::{RaftRpc,RaftRpcServer};
-use raft_rpc::{RequestVoteRpcReply, RequestVoteRpcRequest};
+use raft_rpc::{RequestVoteRpcReply, RequestVoteRpcRequest,AppendEntriesRpcRequest,AppendEntriesRpcReply};
 use raft::network::{ServerChannel, ClientChannel, NetworkChannel};
 use raft::common::{RequestVoteRequest, RequestVoteResponse, CandidateIdType};
 use raft::{RaftServer, ServerConfig};
@@ -75,6 +75,17 @@ impl RaftRpc for RaftRPCServerImpl {
         let reply = raft_rpc::RequestVoteRpcReply {
             term: response.term(),
             vote_granted: response.vote_granted(),
+        };
+        Ok(Response::new(reply))
+    }
+
+    async fn append_entries_rpc(
+        &self,
+        request: Request<AppendEntriesRpcRequest>,
+    ) -> Result<Response<AppendEntriesRpcReply>, Status> {
+        let reply = raft_rpc::AppendEntriesRpcReply {
+            term: 1,
+            success: true,
         };
         Ok(Response::new(reply))
     }

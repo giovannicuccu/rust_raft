@@ -3,6 +3,7 @@ package raft_rpc;
 
 service RaftRPC {
     rpc RequestVoteRPC (RequestVoteRpcRequest) returns (RequestVoteRpcReply);
+    rpc AppendEntriesRPC (AppendEntriesRpcRequest) returns (AppendEntriesRpcReply);
 }
 
 message RequestVoteRpcRequest {
@@ -15,4 +16,29 @@ message RequestVoteRpcRequest {
 message RequestVoteRpcReply {
     uint32 term = 1;
     bool vote_granted = 2;
+}
+
+message AppendEntriesRpcRequest {
+    message Result {
+        uint32 index = 1;
+        uint32 term = 2;
+        enum CommandType {
+            PUT = 0;
+            DELETE = 1;
+        }
+        CommandType command_type=3;
+        string key = 4;
+        string value = 5;
+      }
+    uint32 term = 1;
+    uint32 leader_id = 2;
+    uint32 prev_log_index = 3;
+    uint32 prev_log_term = 4;
+    repeated Result entries= 5 ;
+    uint32 leder_commit_term = 6;
+}
+
+message AppendEntriesRpcReply {
+    uint32 term = 1;
+    bool success = 2;
 }

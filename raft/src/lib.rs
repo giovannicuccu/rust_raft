@@ -23,8 +23,8 @@ enum CommandType {
 
 struct StateMachineCommand {
     command_type: CommandType,
-    //key: String,
-    //value: String,
+    key: String,
+    value: String,
 }
 
 struct LogEntry {
@@ -33,19 +33,6 @@ struct LogEntry {
     state_machine_command: StateMachineCommand,
 }
 
-//const NULL_STR:String=String::from("");
-/*
-TODO: rivedere questo, forse non serve
- */
-const NO_LOG_ENTRY:LogEntry = LogEntry {
-    index: NO_INDEX,
-    term: NO_TERM,
-    state_machine_command: StateMachineCommand {
-        command_type: CommandType::Put,
-        //key: NULL_STR,
-        //value: NULL_STR
-    }
-};
 
 /*
 Raft non specifica completamente il contenuto di LogEntry,
@@ -193,8 +180,24 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
         loop {
             count+=1;
             let mut mutex_guard = self.server_state.lock().unwrap();
-            //let mut inner_server_state=self.server_state.lock().unwrap();
-            //let server_state: &ServerState = match mutex_guard {
+            /*
+            Qui ci va &*mutex_guard perchè volgio un riferimento a ServerState
+            NON E' VERO
+            https://blog.rust-lang.org/2015/04/17/Enums-match-mutation-and-moves.html
+            leggere laparte sul ref binding
+            Se non è un riferimento non riesco a gestire il caso di Leader che fa borrow dei due campi
+            Indagare meglio per capire
+            Se non lo metto cosa succede?
+            con *mutex_guard accedo alla variabile server state e faccio il borrow
+            con &*mutex_guard accedo al riferimento alla variabile server state e NON faccio il borrow
+            Perchè se faccio il borrow funziona con i valori semplici dell'enum?
+            https://blog.rust-lang.org/2015/04/17/Enums-match-mutation-and-moves.html
+            dice che
+            In fact, in Rust, match is designed to work quite well without taking ownership
+            In particular, the input to match is an L-value expression;
+            this means that the input expression is evaluated to a memory location where the value lives.
+            match works by doing this evaluation and then inspecting the data at that memory location.
+             */
             match *mutex_guard {
                 ServerState::Follower => {
                     println!(" start ServerState::Follower id={}",self.config.id);
@@ -221,7 +224,7 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
                         };
                     }
                 }
-                ServerState::Leader =>{
+                ServerState::Leader { ref next_index, ref match_index} =>{
                     println!("start ServerState::Leader id={}",self.config.id);
                 }
                 _ => { () }
