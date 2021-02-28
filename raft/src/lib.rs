@@ -122,7 +122,7 @@ fn discover_other_nodes_in_cluster() -> Vec<String> {
 }
 
 
-impl <C:ClientChannel>RaftServer<C> {
+impl <C:ClientChannel+Send+Sync >RaftServer<C> {
 
     pub fn new<N: NetworkChannel<Client=C>>(server_config: ServerConfig, network_channel:N) -> RaftServer<C> {
         //let server_channel=network_channel.server_channel();
@@ -164,25 +164,27 @@ impl <C:ClientChannel>RaftServer<C> {
 
     pub fn start(&self) {
         //Questo va fatto in un thread a parte perchè deve essere in esecuzione sempre
-        match self.server_state {
-            ServerState::Follower => {
-                println!(" start ServerState::Follower");
-                let now = Instant::now();
-                let mut rng = thread_rng();
-                let election_timeout: u32 = rng.gen_range(self.config.election_timeout_min..=self.config.election_timeout_max);
-                if now.duration_since( self.volatile_state.last_heartbeat_time).as_millis() >= election_timeout as u128 {
-                //il timeout è random fra due range da definire--
-                //Avviare la richiesta di voto
-                    self.send_requests_vote();
-                } else {
-                    println!(" start ServerState::Follower before sleep");
-                    thread::sleep(time::Duration::from_millis(self.config.election_timeout_max as u64) );
-                    println!(" start ServerState::Follower after sleep");
-                    self.start();
+        //thread::spawn(|| {
+            match self.server_state {
+                ServerState::Follower => {
+                    println!(" start ServerState::Follower");
+                    let now = Instant::now();
+                    let mut rng = thread_rng();
+                    let election_timeout: u32 = rng.gen_range(self.config.election_timeout_min..=self.config.election_timeout_max);
+                    if now.duration_since(self.volatile_state.last_heartbeat_time).as_millis() >= election_timeout as u128 {
+                        //il timeout è random fra due range da definire--
+                        //Avviare la richiesta di voto
+                        self.send_requests_vote();
+                    } else {
+                        println!(" start ServerState::Follower before sleep");
+                        thread::sleep(time::Duration::from_millis(self.config.election_timeout_max as u64));
+                        println!(" start ServerState::Follower after sleep");
+                        self.start();
+                    }
                 }
+                _ => { () }
             }
-            _ => { ()}
-        }
+        //});
     }
 
     fn send_requests_vote(&self) {
@@ -191,13 +193,24 @@ impl <C:ClientChannel>RaftServer<C> {
 TODO: capire come gestire lo start quando non ci sono entry e si deve chiedere una request vote
 gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
  */
-        let last_log_index=self.persistent_state.log.last().unwrap_or(&NO_LOG_ENTRY).index;
-        let last_log_term=self.persistent_state.log.last().unwrap_or(&NO_LOG_ENTRY).term;
+        let mut last_log_index=NO_INDEX;
+        let mut last_log_term = NO_TERM;
+        let last_log=self.persistent_state.log.last();
+        if last_log.is_some() {
+            let last_log_entry=self.persistent_state.log.last().unwrap();
+            last_log_index=last_log_entry.index;
+            last_log_term=last_log_entry.term;
+
+        }
         for client_channel in self.clients_for_servers_in_cluster.iter() {
             println!(" before send_requests_vote rpc");
             let request_vote_response=client_channel.send_request_vote(
             RequestVoteRequest::new(self.persistent_state.current_term, self.config.id(),last_log_index, last_log_term));
-            println!("vote response {}",request_vote_response.vote_granted())
+           if (request_vote_response.is_ok()) {
+               println!("vote response {}", request_vote_response.ok().unwrap().vote_granted())
+           } else {
+               println!("vote response ko");
+           }
         }
     }
 

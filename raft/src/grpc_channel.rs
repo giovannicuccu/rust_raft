@@ -37,7 +37,8 @@ impl RaftRPCServerImpl {
             .add_service(RaftRpcServer::new(raft_rpc_server_impl))
             .serve(addr);
         rt.block_on(server_future).expect("failed to successfully run the future on RunTime");
-        println!(" server with addr={} started",addr_str);
+        //Questo sembra che non sia mai eseguito ovvero che si blocchi prima
+        //println!(" server with addr={} started",addr_str);
 
     }
 }
@@ -109,11 +110,15 @@ impl RaftRPCClientImpl {
 
 impl ClientChannel for RaftRPCClientImpl {
 
-    fn send_request_vote(&self, request_vote_request: RequestVoteRequest) -> RequestVoteResponse {
+    fn send_request_vote(&self, request_vote_request: RequestVoteRequest) -> Result<RequestVoteResponse,()> {
         let mut rt = tokio::runtime::Runtime::new().unwrap();
         let response_result=rt.block_on(self.send_request_vote_async(request_vote_request));
         //questo potrebbe non rispondere, gestire con un result
-        response_result.ok().unwrap()
+        return if response_result.is_ok() {
+            Ok(response_result.ok().unwrap())
+        } else {
+            Err(())
+        }
     }
 
 

@@ -13,7 +13,7 @@ pub trait ServerChannel {
 }
 
 pub trait ClientChannel {
-    fn send_request_vote(&self, request_vote_request: RequestVoteRequest)-> RequestVoteResponse;
+    fn send_request_vote(&self, request_vote_request: RequestVoteRequest)-> Result<RequestVoteResponse,()>;
 }
 /*
 questo sotto non è proprio corretto capire cosa fa veramente
