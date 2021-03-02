@@ -12,6 +12,7 @@ tonic = "0.4"
 prost = "0.7"
 tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
 futures="0.3.12"
+chrono="0.4.19"
 
 [build-dependencies]
 tonic-build = "0.4"

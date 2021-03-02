@@ -9,6 +9,7 @@ use std::ops::{Range, Deref};
 use std::borrow::Borrow;
 use std::{thread, time};
 use std::sync::{Arc, Mutex};
+use chrono::Utc;
 
 
 const NO_INDEX : IndexType = 0;
@@ -71,7 +72,7 @@ impl ServerConfig {
 Leader State specificato nel protocollo si applica solo se il server è di tipo Leader
 Rust consente di specificare degli enum con valori diversi per cui uso questa potenzialità
  */
-#[derive(PartialEq, PartialOrd)]
+#[derive(PartialEq, PartialOrd,Clone)]
 enum ServerState {
     Leader {
         next_index:Vec<IndexType>,
@@ -139,10 +140,10 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
             //verificare se è meglio ottenere il valore di last con getOrElse o qualcosa del genere
             last_index<=request_vote_request.last_log_index() {
             *voted_for_guard= request_vote_request.candidate_id() as u16;
-            println!("id:{} - on_request_vote granted ok to {}",*voted_for_guard, self.config.id);
+            println!("id:{} - on_request_vote granted ok to {}",self.config.id,*voted_for_guard);
             return RequestVoteResponse::new(request_vote_request.term(),true);
         }
-        println!("id:{} - on_request_vote granted ko",self.config.id);
+        println!("id:{} - on_request_vote granted ko to {}",self.config.id,request_vote_request.candidate_id());
         RequestVoteResponse::new(NO_TERM,false)
     }
 
@@ -154,12 +155,16 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
             ServerState::Leader { .. } => {}
             Follower => {
                 println!("id:{} - on_append_entries ServerState::Follower",self.config.id);
+                let mut mutex_volatile_state_guard = self.volatile_state.lock().unwrap();
+                mutex_volatile_state_guard.last_heartbeat_time=Instant::now();
             }
             Candidate => {
-                println!("id:{} - on_append_entries ServerState::Candidate",self.config.id);
+                println!("id:{} - on_append_entries ServerState::Candidate will become Follower",self.config.id);
                 *mutex_guard = Follower;
                 let mut mutex_volatile_state_guard = self.volatile_state.lock().unwrap();
                 mutex_volatile_state_guard.last_heartbeat_time=Instant::now();
+                let now = Utc::now();
+                println!("id:{} - on_append_entries ServerState now is Follower={} now ={}",self.config.id,*mutex_guard==Follower, now.timestamp_millis());
             }
         }
         AppendEntriesResponse::new(self.persistent_state.current_term,true)
@@ -204,17 +209,21 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
             match works by doing this evaluation and then inspecting the data at that memory location.
              */
             let mut mutex_guard = self.server_state.lock().unwrap();
+            let server_state_cloned=mutex_guard.clone();
             let now = Instant::now();
-
-            match *mutex_guard {
+            drop(mutex_guard);
+            match server_state_cloned {
                 ServerState::Follower => {
-                    println!("id:{} - start ServerState::Follower",self.config.id);
                     let mut mutex_volatile_state_guard = self.volatile_state.lock().unwrap();
+                    println!("id:{} - start ServerState::Follower last heartbit  {} ms ago",self.config.id,now.duration_since(mutex_volatile_state_guard.last_heartbeat_time).as_millis());
                     let election_timeout: u32 = rng.gen_range(self.config.election_timeout_min..=self.config.election_timeout_max);
                     if now.duration_since(mutex_volatile_state_guard.last_heartbeat_time).as_millis() >= election_timeout as u128 {
                         //il timeout è random fra due range da definire--
                         //Avviare la richiesta di voto
+                        let mut mutex_guard = self.server_state.lock().unwrap();
                         *mutex_guard = Candidate;
+                        let nowUTC = Utc::now();
+                        println!("id:{} - start ServerState::Follower becoming candidate at {}",self.config.id, nowUTC.timestamp_millis());
                     } else {
                         thread::sleep(time::Duration::from_millis(election_timeout as u64));
                     }
@@ -222,15 +231,22 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
                 ServerState::Candidate =>{
                     println!("id:{} - start ServerState::Candidate",self.config.id);
                     if self.send_requests_vote() {
-                        *mutex_guard = Leader {
-                            next_index: vec![],
-                            match_index: vec![]
-                        };
-                        let mut voted_for_guard=self.persistent_state.voted_for.lock().unwrap();
-                        *voted_for_guard=self.config.id;
+                        let mut mutex_guard = self.server_state.lock().unwrap();
+                        if *mutex_guard==Candidate {
+                            *mutex_guard = Leader {
+                                next_index: vec![],
+                                match_index: vec![]
+                            };
+                            let mut voted_for_guard = self.persistent_state.voted_for.lock().unwrap();
+                            *voted_for_guard = self.config.id;
+                        }
                     } else {
-                        let election_timeout: u32 = rng.gen_range(self.config.election_timeout_min..=self.config.election_timeout_max);
-                        thread::sleep(time::Duration::from_millis(election_timeout as u64));
+                        let mut mutex_guard = self.server_state.lock().unwrap();
+                        if *mutex_guard==Candidate {
+                            let election_timeout: u32 = rng.gen_range(self.config.election_timeout_min..=self.config.election_timeout_max);
+                            println!("id:{} - start ServerState::Candidate will sleep for  {} ms ", self.config.id, election_timeout);
+                            thread::sleep(time::Duration::from_millis(election_timeout as u64));
+                        }
                     }
                 }
                 //uso ref per non prendere la ownership
@@ -239,11 +255,12 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
                     if self.send_append_entries() {
 
                     }
+                    thread::sleep(time::Duration::from_millis(10 as u64));
                 }
                 _ => { () }
             }
-            drop(mutex_guard);
-            thread::sleep(time::Duration::from_millis(10 as u64));
+
+
             //println!("id:{} - start count={}",count, self.config.id);
             if count==8 {
                 break;
@@ -283,12 +300,13 @@ gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
                //println!("id:{} - send_requests_vote vote response ko",self.config.id);
            }
         }
-        println!("id:{} - send_requests_vote result={}",self.config.id, ok_votes>= ((self.config.other_nodes_in_cluster.len() / 2)+1) as u16);
+        println!("id:{} - send_requests_vote result={} ok_votes={}",self.config.id, ok_votes>= ((self.config.other_nodes_in_cluster.len() / 2)+1) as u16, ok_votes);
         ok_votes>= ((self.config.other_nodes_in_cluster.len() / 2)+1) as u16
     }
 
     fn send_append_entries(&self)-> bool {
-        println!("id:{} - send_append_entries",self.config.id);
+        let now = Utc::now();
+        println!("id:{} - send_append_entries at {}",self.config.id, now.timestamp_millis());
         let mut ok_votes=0u16;
         for client_channel in self.clients_for_servers_in_cluster.iter() {
             //println!(" before send_requests_vote rpc id={}",self.config.id);
@@ -298,10 +316,12 @@ gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
                 vec![],0));
             if append_entries_response.is_ok() {
                 if append_entries_response.ok().unwrap().success() {
-                    println!("id:{} - send_append_entries response succeded", self.config.id);
+                    let now = Utc::now();
+                    println!("id:{} - send_append_entries response succeded at {}", self.config.id, now.timestamp_millis());
                     ok_votes+=1;
+                } else {
+                    println!("id:{} - send_append_entries response NOT succeded", self.config.id);
                 }
-                println!("id:{} - send_append_entries response NOT succeded", self.config.id);
             } else {
                 println!("id:{} - send_append_entries response ko",self.config.id);
             }
