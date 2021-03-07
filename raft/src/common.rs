@@ -69,6 +69,9 @@ pub struct StateMachineCommand {
 }
 
 impl StateMachineCommand {
+    pub fn new(command_type: CommandType, key: String, value: String) -> Self {
+        StateMachineCommand { command_type, key, value }
+    }
     pub fn command_type(&self) -> &CommandType {
         &self.command_type
     }
@@ -78,6 +81,7 @@ impl StateMachineCommand {
     pub fn value(&self) -> &String {
         &self.value
     }
+
 }
 
 pub struct LogEntry {
@@ -87,6 +91,11 @@ pub struct LogEntry {
 }
 
 impl LogEntry {
+
+    pub fn new(index: IndexType, term: TermType, state_machine_command: StateMachineCommand) -> Self {
+        LogEntry { index, term, state_machine_command }
+    }
+
     pub fn index(&self) -> IndexType {
         self.index
     }
@@ -94,7 +103,6 @@ impl LogEntry {
     pub fn term(&self) -> TermType {
         self.term
     }
-
 
     pub fn state_machine_command(&self) -> &StateMachineCommand {
         &self.state_machine_command

@@ -5,11 +5,12 @@ use crate::common::*;
 use crate::network::*;
 use std::time::Instant;
 use rand::prelude::*;
-use std::ops::{Range, Deref};
-use std::borrow::Borrow;
 use std::{thread, time};
-use std::sync::{Arc, Mutex};
+use std::sync::{Mutex};
 use chrono::Utc;
+use rayon::prelude::IntoParallelRefIterator;
+use rayon::iter::ParallelIterator;
+use std::sync::atomic::{AtomicIsize, Ordering};
 
 
 const NO_INDEX : IndexType = 0;
@@ -91,16 +92,15 @@ pub struct RaftServer<C:ClientChannel> {
     //server_channel: S,
 }
 
-fn discover_other_nodes_in_cluster() -> Vec<String> {
-    Vec::new()
-}
-
 
 impl <C:ClientChannel+Send+Sync >RaftServer<C> {
 
     pub fn new<N: NetworkChannel<Client=C>>(server_config: ServerConfig, network_channel:N) -> RaftServer<C> {
         //let server_channel=network_channel.server_channel();
-        let clients=server_config.other_nodes_in_cluster.iter().map(|address|network_channel.client_channel(String::from(address))).collect();
+        /*
+        Capire perchè dopo che ho messo clients_len si incammella con il tipo
+         */
+        let clients:Vec<C>=server_config.other_nodes_in_cluster.iter().map(|address|network_channel.client_channel(String::from(address))).collect();
         RaftServer {
             persistent_state: ServerPersistentState {
                 current_term:NO_TERM,
@@ -131,7 +131,7 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
         }
         let mut last_index=NO_INDEX;
         if self.persistent_state.log.last().is_some() {
-            let last_index=self.persistent_state.log.last().unwrap().index();
+            last_index=self.persistent_state.log.last().unwrap().index();
         }
 
         let mut voted_for_guard=self.persistent_state.voted_for.lock().unwrap();
@@ -208,13 +208,13 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
             this means that the input expression is evaluated to a memory location where the value lives.
             match works by doing this evaluation and then inspecting the data at that memory location.
              */
-            let mut mutex_guard = self.server_state.lock().unwrap();
+            let mutex_guard = self.server_state.lock().unwrap();
             let server_state_cloned=mutex_guard.clone();
             let now = Instant::now();
             drop(mutex_guard);
             match server_state_cloned {
                 ServerState::Follower => {
-                    let mut mutex_volatile_state_guard = self.volatile_state.lock().unwrap();
+                    let mutex_volatile_state_guard = self.volatile_state.lock().unwrap();
                     println!("id:{} - start ServerState::Follower last heartbit  {} ms ago",self.config.id,now.duration_since(mutex_volatile_state_guard.last_heartbeat_time).as_millis());
                     let election_timeout: u32 = rng.gen_range(self.config.election_timeout_min..=self.config.election_timeout_max);
                     if now.duration_since(mutex_volatile_state_guard.last_heartbeat_time).as_millis() >= election_timeout as u128 {
@@ -222,8 +222,8 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
                         //Avviare la richiesta di voto
                         let mut mutex_guard = self.server_state.lock().unwrap();
                         *mutex_guard = Candidate;
-                        let nowUTC = Utc::now();
-                        println!("id:{} - start ServerState::Follower becoming candidate at {}",self.config.id, nowUTC.timestamp_millis());
+                        let now_utc = Utc::now();
+                        println!("id:{} - start ServerState::Follower becoming candidate at {}",self.config.id, now_utc.timestamp_millis());
                     } else {
                         thread::sleep(time::Duration::from_millis(election_timeout as u64));
                     }
@@ -241,7 +241,7 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
                             *voted_for_guard = self.config.id;
                         }
                     } else {
-                        let mut mutex_guard = self.server_state.lock().unwrap();
+                        let mutex_guard = self.server_state.lock().unwrap();
                         if *mutex_guard==Candidate {
                             let election_timeout: u32 = rng.gen_range(self.config.election_timeout_min..=self.config.election_timeout_max);
                             println!("id:{} - start ServerState::Candidate will sleep for  {} ms ", self.config.id, election_timeout);
@@ -257,7 +257,6 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
                     }
                     thread::sleep(time::Duration::from_millis(10 as u64));
                 }
-                _ => { () }
             }
 
 
@@ -284,31 +283,36 @@ gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
             last_log_term=last_log_entry.term();
 
         }
-        let mut ok_votes=0u16;
-        for client_channel in self.clients_for_servers_in_cluster.iter() {
-            //println!(" before send_requests_vote rpc id={}",self.config.id);
-            let request_vote_response=client_channel.send_request_vote(
+        let ok_votes=AtomicIsize::new(0);
+
+        self.clients_for_servers_in_cluster.par_iter().for_each(|client_channel| {
+           //println!(" before send_requests_vote rpc id={}",self.config.id);
+           let request_vote_response=client_channel.send_request_vote(
             RequestVoteRequest::new(self.persistent_state.current_term, self.config.id(),last_log_index, last_log_term));
            if request_vote_response.is_ok() {
 
                if request_vote_response.ok().unwrap().vote_granted() {
                    //println!("id:{} - send_requests_vote vote response granted", self.config.id);
-                   ok_votes+=1;
+                   ok_votes.fetch_add(1,Ordering::SeqCst);
                }
                //println!("id:{} - send_requests_vote vote response NOT granted", self.config.id);
            } else {
                //println!("id:{} - send_requests_vote vote response ko",self.config.id);
            }
-        }
-        println!("id:{} - send_requests_vote result={} ok_votes={}",self.config.id, ok_votes>= ((self.config.other_nodes_in_cluster.len() / 2)+1) as u16, ok_votes);
-        ok_votes>= ((self.config.other_nodes_in_cluster.len() / 2)+1) as u16
+        });
+        println!("id:{} - send_requests_vote result={} ok_votes={}",self.config.id, ok_votes.load(Ordering::SeqCst)>= ((self.config.other_nodes_in_cluster.len() / 2)+1) as isize, ok_votes.load(Ordering::SeqCst));
+        ok_votes.load(Ordering::SeqCst)>= ((self.config.other_nodes_in_cluster.len() / 2)+1) as isize
     }
 
     fn send_append_entries(&self)-> bool {
         let now = Utc::now();
         println!("id:{} - send_append_entries at {}",self.config.id, now.timestamp_millis());
-        let mut ok_votes=0u16;
-        for client_channel in self.clients_for_servers_in_cluster.iter() {
+        let ok_votes=AtomicIsize::new(0);
+        /*
+        Spiegare bene par_iter come trait aggiuntivo ad un tipo esistente
+
+         */
+        self.clients_for_servers_in_cluster.par_iter().for_each(|client_channel| {
             //println!(" before send_requests_vote rpc id={}",self.config.id);
             let append_entries_response=client_channel.send_append_entries(
                 AppendEntriesRequest::new(self.persistent_state.current_term,
@@ -318,16 +322,16 @@ gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
                 if append_entries_response.ok().unwrap().success() {
                     let now = Utc::now();
                     println!("id:{} - send_append_entries response succeded at {}", self.config.id, now.timestamp_millis());
-                    ok_votes+=1;
+                    ok_votes.fetch_add(1,Ordering::SeqCst);
                 } else {
                     println!("id:{} - send_append_entries response NOT succeded", self.config.id);
                 }
             } else {
                 println!("id:{} - send_append_entries response ko",self.config.id);
             }
-        }
-        println!("id:{} - send_append_entries result={}",self.config.id, ok_votes>= ((self.config.other_nodes_in_cluster.len() / 2)+1) as u16);
-        ok_votes>= ((self.config.other_nodes_in_cluster.len() / 2)+1) as u16
+        });
+        println!("id:{} - send_append_entries result={}",self.config.id, ok_votes.load(Ordering::SeqCst)>= ((self.config.other_nodes_in_cluster.len() / 2)+1) as isize);
+        ok_votes.load(Ordering::SeqCst)>= ((self.config.other_nodes_in_cluster.len() / 2)+1) as isize
     }
 
 }

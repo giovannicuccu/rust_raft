@@ -1,12 +1,11 @@
-use tonic::{transport::Server, Request, Response, Status};
-use futures::{join, future};
+use tonic::{transport::Server, Request, Response, Status, Code};
 use raft_rpc::raft_rpc_client::{RaftRpcClient};
 use raft_rpc::raft_rpc_server::{RaftRpc,RaftRpcServer};
 
 use raft_rpc::{RequestVoteRpcReply, RequestVoteRpcRequest,AppendEntriesRpcRequest,AppendEntriesRpcReply};
 use raft_rpc::append_entries_rpc_request::{LogEntryRpc};
-use raft::network::{ServerChannel, ClientChannel, NetworkChannel};
-use raft::common::{RequestVoteRequest, RequestVoteResponse, CandidateIdType, AppendEntriesResponse, AppendEntriesRequest, CommandType};
+use raft::network::{ClientChannel, NetworkChannel};
+use raft::common::{RequestVoteRequest, RequestVoteResponse, CandidateIdType, AppendEntriesResponse, AppendEntriesRequest, CommandType, LogEntry, StateMachineCommand};
 use raft::{RaftServer, ServerConfig};
 use tokio::runtime::Runtime;
 use std::sync::Arc;
@@ -44,7 +43,7 @@ impl RaftRPCServerImpl {
             raft_server_server_state.manage_server_state();
         });
         println!(" after raft_server start");
-        let mut rt = Runtime::new().expect("failed to obtain a new RunTime object");
+        let rt = Runtime::new().expect("failed to obtain a new RunTime object");
         let server_future = Server::builder()
             .add_service(RaftRpcServer::new(raft_rpc_server_impl))
             .serve(addr);
@@ -86,18 +85,44 @@ impl RaftRpc for RaftRPCServerImpl {
         request: Request<AppendEntriesRpcRequest>,
     ) -> Result<Response<AppendEntriesRpcReply>, Status> {
         let request_obj=request.into_inner();
+        let log_entries_res:Vec<Result<LogEntry,i32>>=request_obj.entries.iter().map(|entry| {
+            let command_type_res=
+                match entry.command_type {
+                    0 => {Ok(CommandType::Put)}
+                    1 => {Ok(CommandType::Delete)}
+                    x @ _ => {Err(x)}
+                };
+            match command_type_res {
+                Ok(command_type) => {
+                    Ok(LogEntry::new(
+                        entry.index, entry.term,
+                        StateMachineCommand::new(
+                            command_type, entry.key.clone(), entry.value.clone())
+                    ))
+                }
+                Err(x)=> {
+                    Err(x)
+                }
+            }
+        }).collect();
+        let err_opt=log_entries_res.iter().find(|enty_res| enty_res.is_err());
+        if err_opt.is_some() {
+            return Err(Status::new(Code::InvalidArgument,"invalid command"));
+        }
+        // qui serve into_iter perchè devo fare la move degli elementi del vettore
+        let log_entries=log_entries_res.into_iter().map(|entry| entry.unwrap()).collect();
         let request_in=AppendEntriesRequest::new(
             request_obj.term,
             request_obj.leader_id as CandidateIdType,
             request_obj.prev_log_index,
             request_obj.prev_log_term,
-            vec![],
+            log_entries,
             request_obj.leader_commit_term,
         );
         let response=self.raft_server.on_append_entries(request_in);
         let reply = raft_rpc::AppendEntriesRpcReply {
-            term: 1,
-            success: true,
+            term: response.term(),
+            success: response.success(),
         };
         Ok(Response::new(reply))
     }
@@ -176,7 +201,7 @@ impl RaftRPCClientImpl {
 impl ClientChannel for RaftRPCClientImpl {
 
     fn send_request_vote(&self, request_vote_request: RequestVoteRequest) -> Result<RequestVoteResponse,()> {
-        let mut rt = tokio::runtime::Runtime::new().unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
         let response_result=rt.block_on(self.send_request_vote_async(request_vote_request));
         //questo potrebbe non rispondere, gestire con un result
         return if response_result.is_ok() {
@@ -188,7 +213,7 @@ impl ClientChannel for RaftRPCClientImpl {
     }
 
     fn send_append_entries(&self, append_entries_request: AppendEntriesRequest) -> Result<AppendEntriesResponse, ()> {
-        let mut rt = tokio::runtime::Runtime::new().unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
         let response_result=rt.block_on(
             self.send_append_entries_async(append_entries_request));
         //questo potrebbe non rispondere, gestire con un result
