@@ -67,6 +67,10 @@ impl ServerConfig {
     pub fn server_port(&self) -> u16 {
         self.server_port
     }
+
+    pub fn other_nodes_in_cluster(&self) -> &Vec<String> {
+        &self.other_nodes_in_cluster
+    }
 }
 
 /*
