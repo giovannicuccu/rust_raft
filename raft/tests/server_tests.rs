@@ -92,33 +92,45 @@ struct RaftTestServerImpl {
 
 impl RaftTestServerImpl {
 
-    pub fn start(server_name: String, server_config: ServerConfig,channel_factory: RaftTestNetworkChannelFactory) {
+    pub fn start(server_name: String, server_config: ServerConfig,channel_factory: Arc<RaftTestNetworkChannelFactory>) {
         let raft_test_server_impl=RaftTestServerImpl {
             raft_server: Arc::new(RaftServer::new(server_config, channel_factory.get_network_channel(server_name.clone()))),
         };
         let raft_server_server_state= raft_test_server_impl.get_raft_server();
+        println!("server:{} - before manage_server_state",&server_name);
         thread::spawn(move || {
             raft_server_server_state.manage_server_state();
         });
 
+        let mut children = vec![];
+
         let mut server_list_iterator= channel_factory.get_server_channels_for_request_vote(&server_name).into_iter();
         while let Some(server_receiver)= server_list_iterator.next() {
             let raft_server_server_for_thread= raft_test_server_impl.get_raft_server();
-            thread::spawn(move || {
-                let request_in=server_receiver.receive_request_from_client();
-                let response=raft_server_server_for_thread.on_request_vote(request_in);
-                server_receiver.send_response_to_client(response);
-            });
+            children.push(thread::spawn(move || {
+                loop {
+                    let request_in = server_receiver.receive_request_from_client();
+                    let response = raft_server_server_for_thread.on_request_vote(request_in);
+                    server_receiver.send_response_to_client(response);
+                }
+            }));
         }
 
         let mut server_list_iterator= channel_factory.get_server_channels_for_append_log_entries(&server_name).into_iter();
         while let Some(server_receiver)= server_list_iterator.next() {
             let raft_server_server_for_thread= raft_test_server_impl.get_raft_server();
-            thread::spawn(move || {
-                let request_in=server_receiver.receive_request_from_client();
-                let response=raft_server_server_for_thread.on_append_entries(request_in);
-                server_receiver.send_response_to_client(response);
-            });
+            children.push(thread::spawn(move || {
+                loop {
+                    let request_in = server_receiver.receive_request_from_client();
+                    let response = raft_server_server_for_thread.on_append_entries(request_in);
+                    server_receiver.send_response_to_client(response);
+                }
+            }));
+        }
+        println!("server:{} - before join",&server_name);
+        for child in children {
+            // Wait for the thread to finish. Returns a result.
+            let _ = child.join();
         }
 
 
@@ -141,7 +153,7 @@ struct RaftTestNetworkChannelFactory {
 
 impl RaftTestNetworkChannelFactory {
     pub fn new(server_address_list: Vec<String>) -> RaftTestNetworkChannelFactory {
-        let local_client_map_mutex=Mutex::new(HashMap::new());
+        let local_client_map_mutex: Mutex<HashMap<String, HashMap<String, TestClientChannel>>>=Mutex::new(HashMap::new());
         let local_server_map_for_append_entries_mutex=Mutex::new(HashMap::new());
         let local_server_map_for_send_request_vote_mutex=Mutex::new(HashMap::new());
         /*
@@ -160,11 +172,12 @@ se non metto niente viene rilasciato a fine metodo
         TODO spiegare perchè qui va &server_address_list al posto di server_address_list
          */
             for server_address_from in &server_address_list {
-                let mut local_client_map_for_server = HashMap::new();
+                //let mut local_client_map_for_server = HashMap::new();
                 let mut server_receiver_for_append_log_entries_list = vec![];
                 let mut server_receiver_for_request_vote_list = vec![];
                 for server_address_to in &server_address_list {
                     if server_address_from != server_address_to {
+                        println!("creating channel for {} -> {}", server_address_from, server_address_to);
                         let (sender_for_request_vote_req, receiver_for_request_vote_req) = channel();
                         let (sender_for_request_vote_resp, receiver_for_request_vote_resp) = channel();
                         let (sender_for_append_log_entries_req, receiver_for_append_log_entries_req) = channel();
@@ -174,12 +187,18 @@ se non metto niente viene rilasciato a fine metodo
                         let client_sender_for_append_log_entries = ClientSender::new(sender_for_append_log_entries_req, receiver_for_append_log_entries_resp);
                         let server_receiver_for_append_log_entries = ServerReceiver::new(receiver_for_append_log_entries_req, sender_for_append_log_entries_resp);
                         let client_channel = TestClientChannel::new(client_sender_for_request_vote, client_sender_for_append_log_entries);
-                        local_client_map_for_server.insert(server_address_to.clone(), client_channel);
+                        if local_client_map.contains_key(&server_address_to.clone()) {
+                            let mut local_client_map_for_server = local_client_map.get_mut(&server_address_to.clone()).unwrap();
+                            local_client_map_for_server.insert(server_address_from.clone(), client_channel);
+                        } else {
+                            let mut local_client_map_for_server = HashMap::new();
+                            local_client_map_for_server.insert(server_address_from.clone(), client_channel);
+                            local_client_map.insert(server_address_to.clone(), local_client_map_for_server);
+                        }
                         server_receiver_for_append_log_entries_list.push(server_receiver_for_append_log_entries);
                         server_receiver_for_request_vote_list.push(server_receiver_for_request_vote);
                     }
                 }
-                local_client_map.insert(server_address_from.clone(), local_client_map_for_server);
                 local_server_map_for_append_entries.insert(server_address_from.clone(), server_receiver_for_append_log_entries_list);
                 local_server_map_for_send_request_vote.insert(server_address_from.clone(), server_receiver_for_request_vote_list);
             }
@@ -197,11 +216,13 @@ se non metto niente viene rilasciato a fine metodo
     }
 
     pub fn get_server_channels_for_request_vote(&self, server_address: &String) -> Vec<ServerReceiver<RequestVoteRequest, RequestVoteResponse>> {
+        println!("get_server_channels_for_request_vote for {}", server_address);
         let mut local_server_map_for_send_request_vote=self.server_map_for_send_request_vote.lock().unwrap();
         local_server_map_for_send_request_vote.remove(server_address).unwrap()
     }
 
     pub fn get_server_channels_for_append_log_entries(&self, server_address: &String) -> Vec<ServerReceiver<AppendEntriesRequest, AppendEntriesResponse>> {
+        println!("get_server_channels_for_append_log_entries for {}", server_address);
         let mut local_server_map_for_append_entries=self.server_map_for_append_entries.lock().unwrap();
         local_server_map_for_append_entries.remove(server_address).unwrap()
     }
@@ -238,5 +259,33 @@ questo si può mettere anche dentro la impl di una struct
  */
 #[test]
 fn testThreeServers() {
+    let server_config_1=ServerConfig::new(1,65,100, 9090,vec![String::from("server2"),String::from("server3")]);
+    let server_config_2=ServerConfig::new(2,65,100, 9091,vec![String::from("server1"),String::from("server3")]);
+    let server_config_3=ServerConfig::new(3,65,100, 9092,vec![String::from("server1"),String::from("server2")]);
 
+    let mut children = vec![];
+
+    /*
+Se non raccolgo gli handle il programma finisce subito
+ */
+    let channel_factory=Arc::new(RaftTestNetworkChannelFactory::new(vec![String::from("server1"),String::from("server2"),String::from("server3")]));
+    let channel_factory_1=channel_factory.clone();
+    println!("before starting servers");
+    children.push(thread::spawn(|| {
+        println!("inside starting server 1");
+        RaftTestServerImpl::start(String::from("server1"),server_config_1,channel_factory_1);
+    }));
+    let channel_factory_2=channel_factory.clone();
+    children.push(thread::spawn(|| {
+        RaftTestServerImpl::start(String::from("server2"),server_config_2,channel_factory_2);
+    }));
+    let channel_factory_3=channel_factory.clone();
+    children.push(thread::spawn(|| {
+        RaftTestServerImpl::start(String::from("server3"),server_config_3,channel_factory_3);
+    }));
+
+    for child in children {
+        // Wait for the thread to finish. Returns a result.
+        let _ = child.join();
+    }
 }
