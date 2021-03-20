@@ -4,7 +4,9 @@ use raft::network::{ClientChannel, NetworkChannel};
 use raft::common::{AppendEntriesResponse, RequestVoteRequest, AppendEntriesRequest, RequestVoteResponse};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::thread;
+use std::{thread, time};
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::time::Sleep;
 
 
 struct ClientSender<SReq,SResp> {
@@ -88,27 +90,42 @@ impl ClientChannel for TestClientChannel {
 
 struct RaftTestServerImpl {
     raft_server: Arc<RaftServer<TestClientChannel>>,
+    server_name: String,
+    channel_factory: Arc<RaftTestNetworkChannelFactory>,
+    shutdown: Arc<AtomicBool>,
+
 }
 
 impl RaftTestServerImpl {
 
-    pub fn start(server_name: String, server_config: ServerConfig,channel_factory: Arc<RaftTestNetworkChannelFactory>) {
-        let raft_test_server_impl=RaftTestServerImpl {
+    pub fn new(server_name: String, server_config: ServerConfig,channel_factory: Arc<RaftTestNetworkChannelFactory>) -> RaftTestServerImpl {
+        RaftTestServerImpl {
             raft_server: Arc::new(RaftServer::new(server_config, channel_factory.get_network_channel(server_name.clone()))),
-        };
-        let raft_server_server_state= raft_test_server_impl.get_raft_server();
-        println!("server:{} - before manage_server_state",&server_name);
+            server_name,
+            channel_factory,
+            shutdown:Arc::new(AtomicBool::new(false)),
+        }
+    }
+    pub fn stop(&self) {
+        self.shutdown.store(true, Ordering::SeqCst);
+    }
+
+    pub fn start(&self) {
+
+        let raft_server_server_state= self.get_raft_server();
+        println!("server:{} - before manage_server_state",self.server_name);
         thread::spawn(move || {
             raft_server_server_state.manage_server_state();
         });
 
         let mut children = vec![];
 
-        let mut server_list_iterator= channel_factory.get_server_channels_for_request_vote(&server_name).into_iter();
+        let mut server_list_iterator= self.channel_factory.get_server_channels_for_request_vote(&self.server_name).into_iter();
         while let Some(server_receiver)= server_list_iterator.next() {
-            let raft_server_server_for_thread= raft_test_server_impl.get_raft_server();
+            let raft_server_server_for_thread= self.get_raft_server();
+            let shutdown_thread=self.shutdown.clone();
             children.push(thread::spawn(move || {
-                loop {
+                while !shutdown_thread.load(Ordering::SeqCst) {
                     let request_in = server_receiver.receive_request_from_client();
                     let response = raft_server_server_for_thread.on_request_vote(request_in);
                     server_receiver.send_response_to_client(response);
@@ -116,18 +133,19 @@ impl RaftTestServerImpl {
             }));
         }
 
-        let mut server_list_iterator= channel_factory.get_server_channels_for_append_log_entries(&server_name).into_iter();
+        let mut server_list_iterator= self.channel_factory.get_server_channels_for_append_log_entries(&self.server_name).into_iter();
         while let Some(server_receiver)= server_list_iterator.next() {
-            let raft_server_server_for_thread= raft_test_server_impl.get_raft_server();
+            let raft_server_server_for_thread= self.get_raft_server();
+            let shutdown_thread=self.shutdown.clone();
             children.push(thread::spawn(move || {
-                loop {
+                while !shutdown_thread.load(Ordering::SeqCst) {
                     let request_in = server_receiver.receive_request_from_client();
                     let response = raft_server_server_for_thread.on_append_entries(request_in);
                     server_receiver.send_response_to_client(response);
                 }
             }));
         }
-        println!("server:{} - before join",&server_name);
+        println!("server:{} - before join",&self.server_name);
         for child in children {
             // Wait for the thread to finish. Returns a result.
             let _ = child.join();
@@ -269,21 +287,29 @@ fn testThreeServers() {
 Se non raccolgo gli handle il programma finisce subito
  */
     let channel_factory=Arc::new(RaftTestNetworkChannelFactory::new(vec![String::from("server1"),String::from("server2"),String::from("server3")]));
-    let channel_factory_1=channel_factory.clone();
     println!("before starting servers");
-    children.push(thread::spawn(|| {
+    let server1=Arc::new(RaftTestServerImpl::new(String::from("server1"),server_config_1,channel_factory.clone()));
+    let server1_thread=server1.clone();
+    children.push(thread::spawn(move || {
         println!("inside starting server 1");
-        RaftTestServerImpl::start(String::from("server1"),server_config_1,channel_factory_1);
+        server1_thread.start();
     }));
-    let channel_factory_2=channel_factory.clone();
-    children.push(thread::spawn(|| {
-        RaftTestServerImpl::start(String::from("server2"),server_config_2,channel_factory_2);
+    let server2=Arc::new(RaftTestServerImpl::new(String::from("server2"),server_config_2,channel_factory.clone()));
+    let server2_thread=server2.clone();
+    children.push(thread::spawn(move || {
+        server2_thread.start();
     }));
-    let channel_factory_3=channel_factory.clone();
-    children.push(thread::spawn(|| {
-        RaftTestServerImpl::start(String::from("server3"),server_config_3,channel_factory_3);
+    let server3=Arc::new(RaftTestServerImpl::new(String::from("server3"),server_config_3,channel_factory.clone()));
+    let server3_thread=server3.clone();
+    children.push(thread::spawn(move || {
+        server3_thread.start();
     }));
 
+    let sleep_time = time::Duration::from_millis(3000);
+    thread::sleep(sleep_time);
+    server1.stop();
+    server2.stop();
+    server3.stop();
     for child in children {
         // Wait for the thread to finish. Returns a result.
         let _ = child.join();
