@@ -1,4 +1,4 @@
-use std::sync::mpsc::{Sender, Receiver, channel};
+use std::sync::mpsc::{Sender, Receiver, channel, RecvTimeoutError};
 use raft::{ServerConfig, RaftServer};
 use raft::network::{ClientChannel, NetworkChannel};
 use raft::common::{AppendEntriesResponse, RequestVoteRequest, AppendEntriesRequest, RequestVoteResponse};
@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::{thread, time};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::time::Sleep;
+use std::time::Duration;
 
 
 struct ClientSender<SReq,SResp> {
@@ -50,8 +51,9 @@ impl <SReq,SResp> ServerReceiver<SReq, SResp> {
         self.server_response_sender.send(message).unwrap();
     }
 
-    pub fn receive_request_from_client(&self) -> SReq {
-        self.server_request_receiver.recv().unwrap()
+    pub fn receive_request_from_client(&self) -> Result<SReq,RecvTimeoutError> {
+        let timeout = Duration::from_millis(50);
+        self.server_request_receiver.recv_timeout(timeout)
     }
 }
 
@@ -107,7 +109,9 @@ impl RaftTestServerImpl {
         }
     }
     pub fn stop(&self) {
+        let cloned=self.shutdown.clone();
         self.shutdown.store(true, Ordering::SeqCst);
+        println!("stop shutdown value {}", cloned.load(Ordering::SeqCst));
     }
 
     pub fn start(&self) {
@@ -126,10 +130,14 @@ impl RaftTestServerImpl {
             let shutdown_thread=self.shutdown.clone();
             children.push(thread::spawn(move || {
                 while !shutdown_thread.load(Ordering::SeqCst) {
-                    let request_in = server_receiver.receive_request_from_client();
-                    let response = raft_server_server_for_thread.on_request_vote(request_in);
-                    server_receiver.send_response_to_client(response);
+                    let result_request_in = server_receiver.receive_request_from_client();
+                    if result_request_in.is_ok() {
+                        let request_in=result_request_in.unwrap();
+                        let response = raft_server_server_for_thread.on_request_vote(request_in);
+                        server_receiver.send_response_to_client(response);
+                    }
                 }
+                println!("exit from on_request_vote thread");
             }));
         }
 
@@ -139,10 +147,14 @@ impl RaftTestServerImpl {
             let shutdown_thread=self.shutdown.clone();
             children.push(thread::spawn(move || {
                 while !shutdown_thread.load(Ordering::SeqCst) {
-                    let request_in = server_receiver.receive_request_from_client();
-                    let response = raft_server_server_for_thread.on_append_entries(request_in);
-                    server_receiver.send_response_to_client(response);
+                    let result_request_in = server_receiver.receive_request_from_client();
+                    if result_request_in.is_ok() {
+                        let request_in = result_request_in.unwrap();
+                        let response = raft_server_server_for_thread.on_append_entries(request_in);
+                        server_receiver.send_response_to_client(response);
+                    }
                 }
+                println!("exit from append_entries thread");
             }));
         }
         println!("server:{} - before join",&self.server_name);
