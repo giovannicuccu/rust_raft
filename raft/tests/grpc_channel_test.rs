@@ -9,7 +9,7 @@ use raft::common::{RequestVoteRequest, RequestVoteResponse, CandidateIdType, App
 use raft::{RaftServer, ServerConfig};
 use tokio::runtime::Runtime;
 use std::sync::{Arc, Mutex};
-use std::thread;
+use std::{thread, time};
 use std::ops::Deref;
 use chrono::Utc;
 use tonic::transport::{Endpoint, Channel};
@@ -19,34 +19,20 @@ pub mod raft_rpc {
     tonic::include_proto!("raft_rpc"); // The string specified here must match the proto package name
 }
 
-pub struct RaftRPCServerImpl {
-    raft_server: Arc<RaftServer<RaftRPCClientImpl>>,
+pub struct RaftRPCServerImplTest {
 }
 
-impl RaftRPCServerImpl {
+impl RaftRPCServerImplTest {
 
-    pub fn new (server_config: ServerConfig) -> RaftRPCServerImpl {
-        RaftRPCServerImpl {
-            raft_server: Arc::new(RaftServer::new(server_config, RaftRpcNetworkChannel {})),
-        }
-    }
 
-    fn get_raft_server(&self) -> Arc<RaftServer<RaftRPCClientImpl>>{
-        self.raft_server.clone()
-    }
 
     pub fn start(server_config: ServerConfig) {
         let addr_str=format!("127.0.0.1:{}",server_config.server_port());
         println!("addr_str={}",addr_str);
         let addr = addr_str.parse().unwrap();
-        let raft_rpc_server_impl = RaftRPCServerImpl::new(server_config);
+        let raft_rpc_server_impl = RaftRPCServerImplTest { } ;
         //è da mettere qui perchè questa RaftRpcServer::new(raft_rpc_server_impl) fa il borrow
-        let raft_server_server_state= raft_rpc_server_impl.get_raft_server();
-        thread::spawn(move || {
-            loop {
-                raft_server_server_state.manage_server_state();
-            }
-        });
+
         println!(" after raft_server start");
         let rt = Runtime::new().expect("failed to obtain a new RunTime object");
         let server_future = Server::builder()
@@ -60,7 +46,7 @@ impl RaftRPCServerImpl {
 }
 
 #[tonic::async_trait]
-impl RaftRpc for RaftRPCServerImpl {
+impl RaftRpc for RaftRPCServerImplTest {
     async fn request_vote_rpc(
         &self,
         request: Request<RequestVoteRpcRequest>,
@@ -74,13 +60,10 @@ impl RaftRpc for RaftRPCServerImpl {
             request_obj.last_log_index,
             request_obj.last_log_term,
         );
-        /*
-        Questo continua a funzionare anche con Arc perchè evidentemente il compilatore è smart
-         */
-        let response=self.raft_server.on_request_vote(request_in);
+
         let reply = raft_rpc::RequestVoteRpcReply {
-            term: response.term(),
-            vote_granted: response.vote_granted(),
+            term: 1,
+            vote_granted:true,
         };
         Ok(Response::new(reply))
     }
@@ -90,45 +73,10 @@ impl RaftRpc for RaftRPCServerImpl {
         request: Request<AppendEntriesRpcRequest>,
     ) -> Result<Response<AppendEntriesRpcReply>, Status> {
         println!("async fn append_entries_rpc at {}",Utc::now().timestamp_millis());
-        let request_obj=request.into_inner();
-        let log_entries_res:Vec<Result<LogEntry,i32>>=request_obj.entries.iter().map(|entry| {
-            let command_type_res=
-                match entry.command_type {
-                    0 => {Ok(CommandType::Put)}
-                    1 => {Ok(CommandType::Delete)}
-                    x @ _ => {Err(x)}
-                };
-            match command_type_res {
-                Ok(command_type) => {
-                    Ok(LogEntry::new(
-                        entry.index, entry.term,
-                        StateMachineCommand::new(
-                            command_type, entry.key.clone(), entry.value.clone())
-                    ))
-                }
-                Err(x)=> {
-                    Err(x)
-                }
-            }
-        }).collect();
-        let err_opt=log_entries_res.iter().find(|enty_res| enty_res.is_err());
-        if err_opt.is_some() {
-            return Err(Status::new(Code::InvalidArgument,"invalid command"));
-        }
-        // qui serve into_iter perchè devo fare la move degli elementi del vettore
-        let log_entries=log_entries_res.into_iter().map(|entry| entry.unwrap()).collect();
-        let request_in=AppendEntriesRequest::new(
-            request_obj.term,
-            request_obj.leader_id as CandidateIdType,
-            request_obj.prev_log_index,
-            request_obj.prev_log_term,
-            log_entries,
-            request_obj.leader_commit_term,
-        );
-        let response=self.raft_server.on_append_entries(request_in);
+
         let reply = raft_rpc::AppendEntriesRpcReply {
-            term: response.term(),
-            success: response.success(),
+            term: 1,
+            success: true,
         };
         Ok(Response::new(reply))
     }
@@ -148,19 +96,17 @@ della struct nel nostro caso handler che è un puntatore a funzione
     }
 }*/
 
-pub struct RaftRPCClientImpl {
+pub struct RaftRPCClientImplTest {
     address: String,
     opt_channel: Mutex<Option<Channel>>,
-    opt_channel_req_vote: Mutex<Option<Channel>>,
 }
 
 
-impl RaftRPCClientImpl {
-    pub fn new(address: String) -> RaftRPCClientImpl{
-        RaftRPCClientImpl {
+impl RaftRPCClientImplTest {
+    pub fn new(address: String) -> Self{
+        RaftRPCClientImplTest {
             address,
             opt_channel: Mutex::new(None),
-            opt_channel_req_vote: Mutex::new(None),
         }
     }
 
@@ -177,7 +123,7 @@ impl RaftRPCClientImpl {
                 .timeout(Duration::from_secs(5))
                 .concurrency_limit(2);
             //let rt = tokio::runtime::Runtime::new().unwrap();
-            let channel_res=RaftRPCClientImpl::connect(endpoint).await;
+            let channel_res=RaftRPCClientImplTest::connect(endpoint).await;
             if channel_res.is_ok() {
                 let channel=channel_res.unwrap();
                 let clone=channel.clone();
@@ -192,32 +138,10 @@ impl RaftRPCClientImpl {
 
     }
 
-    async fn getRPCChannelReqVote(&self) -> Channel {
-        let local_opt_channel_res=self.opt_channel_req_vote.lock();
-        let mut local_opt_channel=local_opt_channel_res.unwrap();
-        if local_opt_channel.is_none() {
-            let endpoint= Endpoint::from_shared(self.address.clone()).unwrap()
-                .timeout(Duration::from_secs(5))
-                .concurrency_limit(2);
-            //let rt = tokio::runtime::Runtime::new().unwrap();
-            let channel_res=RaftRPCClientImpl::connect(endpoint).await;
-            if channel_res.is_ok() {
-                let channel=channel_res.unwrap();
-                let clone=channel.clone();
-                local_opt_channel.replace(channel);
-                return clone;
-            } else {
-                panic!("Errore di connessione")
-            }
-        } else {
-            return local_opt_channel.as_ref().unwrap().clone();
-        }
 
-    }
 
     async fn send_request_vote_async(&self, request_vote_request: RequestVoteRequest) ->Result<RequestVoteResponse, Box<dyn std::error::Error>>  {
-        //let mut client = RaftRpcClient::connect(String::from(&self.address)).await?;
-        let channel=self.getRPCChannelReqVote().await;
+        let channel=self.getRPCChannel().await;
         let mut client = RaftRpcClient::new(channel);
         //let mut client = RaftRpcClient::connect(String::from(&self.address)).await?;
 
@@ -266,7 +190,7 @@ impl RaftRPCClientImpl {
     }
 }
 
-impl ClientChannel for RaftRPCClientImpl {
+impl ClientChannel for RaftRPCClientImplTest {
 
     fn send_request_vote(&self, request_vote_request: RequestVoteRequest) -> Result<RequestVoteResponse,()> {
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -296,7 +220,7 @@ impl ClientChannel for RaftRPCClientImpl {
     }
 }
 
-pub struct RaftRpcNetworkChannel {
+pub struct RaftRpcNetworkChannelTest {
 }
 
 
@@ -313,11 +237,41 @@ capire bene la differenza rispetto a quella corretta
     }
 }*/
 
-impl NetworkChannel for RaftRpcNetworkChannel {
-    type Client = RaftRPCClientImpl;
+impl NetworkChannel for RaftRpcNetworkChannelTest {
+    type Client = RaftRPCClientImplTest;
 
     fn client_channel(&self, remote_address: String) -> Self::Client {
-        RaftRPCClientImpl::new(remote_address)
+        RaftRPCClientImplTest::new(remote_address)
     }
+}
+
+#[test]
+fn testOneServer() {
+    let server_config_1=ServerConfig::new(1,65,100, 9090,vec![String::from("http://localhost:9091"),String::from("http://localhost:9092")]);
+    thread::spawn(|| {
+        RaftRPCServerImplTest::start(server_config_1);
+    });
+    let sleep_time = time::Duration::from_millis(2000);
+    thread::sleep(sleep_time);
+    let network_channel=RaftRpcNetworkChannelTest {};
+    println!("Before SendRequest_vote");
+    let client_channel=network_channel.client_channel(String::from("http://localhost:9090"));
+    let request_vote_request=RequestVoteRequest::new(1,1,1,1);
+    let request_vote_response=client_channel.send_request_vote(request_vote_request);
+    if request_vote_response.is_ok() {
+        println!("Request vote ok");
+    }
+    println!("Before Append Entries");
+    let append_entries_request=AppendEntriesRequest::new(1,1,1,1,vec![],1);
+    let append_entries_response= client_channel.send_append_entries(append_entries_request);
+    if append_entries_response.is_ok() {
+        println!("Append entries ok");
+    }
+    let append_entries_request2=AppendEntriesRequest::new(1,1,1,1,vec![],1);
+    let append_entries_response2= client_channel.send_append_entries(append_entries_request2);
+    if append_entries_response2.is_ok() {
+        println!("Append entries ok2");
+    }
+
 }
 

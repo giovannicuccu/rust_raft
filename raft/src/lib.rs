@@ -87,6 +87,14 @@ enum ServerState {
     Candidate,
 }
 
+//Capire perchè servono sia partialEq che Eq e Eq non basta
+#[derive(Eq, PartialEq)]
+pub enum RaftServerState {
+    Leader,
+    Follower,
+    Candidate,
+}
+
 pub struct RaftServer<C:ClientChannel> {
     persistent_state: ServerPersistentState,
     volatile_state: Mutex<ServerVolatileState>,
@@ -154,7 +162,7 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
     pub fn on_append_entries(&self,append_entries_request: AppendEntriesRequest) -> AppendEntriesResponse {
         println!("id:{} - on_append_entries begin",self.config.id);
         let mut mutex_guard = self.server_state.lock().unwrap();
-        println!("id:{} - on_append_entries got mutex",self.config.id);
+        println!("id:{} - on_append_entries got mutex at {}",self.config.id,Utc::now().timestamp_millis());
         match *mutex_guard {
             ServerState::Leader { .. } => {}
             Follower => {
@@ -189,10 +197,11 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
 
         //let thread_server_state=self.server_state.clone();
         //thread::spawn(move || {
+        println!("id:{} - manage_server_state start at {}",self.config.id, Utc::now().timestamp_millis());
         let mut count = 0u32;
         let mut rng = thread_rng();
-        loop {
-            count+=1;
+        //loop {
+        //    count+=1;
 
             /*
             Qui ci va &*mutex_guard perchè volgio un riferimento a ServerState
@@ -255,7 +264,7 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
                 }
                 //uso ref per non prendere la ownership
                 ServerState::Leader { ref next_index, ref match_index} =>{
-                    println!("id:{} - start ServerState::Leader",self.config.id);
+                    println!("id:{} - start ServerState::Leader at {}",self.config.id, Utc::now().timestamp_millis());
                     if self.send_append_entries() {
 
                     }
@@ -265,11 +274,11 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
 
 
             //println!("id:{} - start count={}",count, self.config.id);
-            if count==8 {
+ /*           if count==8 {
                 break;
-            }
+            }*/
             //});
-        }
+        //}
     }
 
     fn send_requests_vote(&self)-> bool {
@@ -336,6 +345,21 @@ gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
         });
         println!("id:{} - send_append_entries result={}",self.config.id, ok_votes.load(Ordering::SeqCst)>= ((self.config.other_nodes_in_cluster.len() / 2)+1) as isize);
         ok_votes.load(Ordering::SeqCst)>= ((self.config.other_nodes_in_cluster.len() / 2)+1) as isize
+    }
+
+    pub fn server_state(&self) ->RaftServerState {
+        let server_state=self.server_state.lock().unwrap();
+        match *server_state {
+            ServerState::Follower => {
+                RaftServerState::Follower
+            }
+            ServerState::Candidate => {
+                RaftServerState::Candidate
+            }
+            ServerState::Leader {  .. } =>{
+                RaftServerState::Leader
+            }
+        }
     }
 
 }

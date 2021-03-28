@@ -1,5 +1,5 @@
 use std::sync::mpsc::{Sender, Receiver, channel, RecvTimeoutError};
-use raft::{ServerConfig, RaftServer};
+use raft::{ServerConfig, RaftServer, RaftServerState};
 use raft::network::{ClientChannel, NetworkChannel};
 use raft::common::{AppendEntriesResponse, RequestVoteRequest, AppendEntriesRequest, RequestVoteResponse};
 use std::collections::HashMap;
@@ -118,8 +118,11 @@ impl RaftTestServerImpl {
 
         let raft_server_server_state= self.get_raft_server();
         println!("server:{} - before manage_server_state",self.server_name);
+        let shutdown_server_state_thread=self.shutdown.clone();
         thread::spawn(move || {
-            raft_server_server_state.manage_server_state();
+            while !shutdown_server_state_thread.load(Ordering::SeqCst) {
+                raft_server_server_state.manage_server_state();
+            }
         });
 
         let mut children = vec![];
@@ -148,6 +151,7 @@ impl RaftTestServerImpl {
             children.push(thread::spawn(move || {
                 while !shutdown_thread.load(Ordering::SeqCst) {
                     let result_request_in = server_receiver.receive_request_from_client();
+
                     if result_request_in.is_ok() {
                         let request_in = result_request_in.unwrap();
                         let response = raft_server_server_for_thread.on_append_entries(request_in);
@@ -168,6 +172,10 @@ impl RaftTestServerImpl {
 
     fn get_raft_server(&self) -> Arc<RaftServer<TestClientChannel>>{
         self.raft_server.clone()
+    }
+
+    pub fn raft_server_state(&self) -> RaftServerState {
+        self.raft_server.server_state()
     }
 }
 
@@ -287,7 +295,7 @@ impl NetworkChannel for RaftTestNetworkChannel {
 /*
 questo si può mettere anche dentro la impl di una struct
  */
-#[test]
+//#[test]
 fn testThreeServers() {
     let server_config_1=ServerConfig::new(1,65,100, 9090,vec![String::from("server2"),String::from("server3")]);
     let server_config_2=ServerConfig::new(2,65,100, 9091,vec![String::from("server1"),String::from("server3")]);
@@ -326,4 +334,8 @@ Se non raccolgo gli handle il programma finisce subito
         // Wait for the thread to finish. Returns a result.
         let _ = child.join();
     }
+    let server_state_list=vec![server1.raft_server_state(),server2.raft_server_state(), server3.raft_server_state()];
+    assert_eq!(server_state_list.iter().filter(|server_state| **server_state==RaftServerState::Follower).count(),2);
+    assert_eq!(server_state_list.iter().filter(|server_state| **server_state==RaftServerState::Leader).count(),1);
+    assert_eq!(server_state_list.iter().filter(|server_state| **server_state==RaftServerState::Candidate).count(),0);
 }

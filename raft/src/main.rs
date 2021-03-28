@@ -1,6 +1,6 @@
 use raft::ServerConfig;
 use crate::grpc_channel::RaftRPCServerImpl;
-use std::thread;
+use std::{thread, time};
 
 mod grpc_channel;
 
@@ -23,9 +23,13 @@ Se non raccolgo gli handle il programma finisce subito
     children.push(thread::spawn(|| {
         RaftRPCServerImpl::start(server_config_3);
     }));
-
-    for child in children {
+    let sleep_time = time::Duration::from_millis(3000);
+    thread::sleep(sleep_time);
+/*    server1.stop();
+    server2.stop();
+    server3.stop();*/
+    /*for child in children {
         // Wait for the thread to finish. Returns a result.
         let _ = child.join();
-    }
+    }*/
 }
