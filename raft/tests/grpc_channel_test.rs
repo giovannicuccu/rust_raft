@@ -39,8 +39,6 @@ impl RaftRPCServerImplTest {
             .add_service(RaftRpcServer::new(raft_rpc_server_impl))
             .serve(addr);
         rt.block_on(server_future).expect("failed to successfully run the future on RunTime");
-        //Questo sembra che non sia mai eseguito ovvero che si blocchi prima
-        //println!(" server with addr={} started",addr_str);
 
     }
 }
@@ -81,20 +79,6 @@ impl RaftRpc for RaftRPCServerImplTest {
         Ok(Response::new(reply))
     }
 }
-/*
-RaftRPC è un trait Send+Sync questo significa che
-Send => può essere passato come valore (move in Rust) fra thread
-Sync => può essere passato come non mut reference fra thread
-Se è Sync anche chi implementa il trait deve essere Sync e quindi devono essere sync anche le property
-della struct nel nostro caso handler che è un puntatore a funzione
- */
-
-
-/*impl ServerChannel for RaftRPCServerImpl {
-    fn handle_request_vote(&mut self, handler_fn: impl Fn(RequestVoteRequest) -> RequestVoteResponse + Send + Sync) {
-        self.handler=handler_fn;
-    }
-}*/
 
 pub struct RaftRPCClientImplTest {
     address: String,
@@ -223,19 +207,6 @@ impl ClientChannel for RaftRPCClientImplTest {
 pub struct RaftRpcNetworkChannelTest {
 }
 
-
-/*
-Questo sotto non è corretto
-capire bene la differenza rispetto a quella corretta
- */
-
-
-
-/*impl NetworkChannel<RaftRPCClientImpl> for RaftRpcNetworkChannel {
-    fn client_channel(&self, remote_address: String) -> RaftRPCClientImpl {
-        RaftRPCClientImpl::new(remote_address)
-    }
-}*/
 
 impl NetworkChannel for RaftRpcNetworkChannelTest {
     type Client = RaftRPCClientImplTest;
