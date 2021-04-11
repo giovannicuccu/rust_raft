@@ -232,17 +232,20 @@ fn testOneServer() {
     if request_vote_response.is_ok() {
         println!("Request vote ok");
     }
+    assert!(request_vote_response.is_ok());
     println!("Before Append Entries");
     let append_entries_request=AppendEntriesRequest::new(1,1,1,1,vec![],1);
     let append_entries_response= client_channel.send_append_entries(append_entries_request);
     if append_entries_response.is_ok() {
         println!("Append entries ok");
     }
+    assert!(append_entries_response.is_ok());
     let append_entries_request2=AppendEntriesRequest::new(1,1,1,1,vec![],1);
     let append_entries_response2= client_channel.send_append_entries(append_entries_request2);
     if append_entries_response2.is_ok() {
         println!("Append entries ok2");
     }
+    assert!(append_entries_response2.is_ok());
 
 }
 
