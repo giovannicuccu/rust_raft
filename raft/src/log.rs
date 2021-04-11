@@ -8,18 +8,23 @@ ogni record ha un checksum per capire se è valido o meno
  */
 
 
-use std::io::{BufReader, Read};
+use std::io::{BufReader, Read, BufWriter, Write};
 use std::fs::{File, OpenOptions};
-use std::path::PathBuf;
+use std::path::{PathBuf, Path};
 use std::io;
 use std::convert::TryInto;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const BLOCK_SIZE: u16 = u16::MAX;
+
+const HEADER_SIZE: u8 = 11;
 
 const FULL: u8 = 1;
 const FIRST: u8 = 2;
 const MIDDLE: u8 = 3;
 const LAST: u8 = 4;
+
+
 
 struct RecordEntry {
     crc: u32,
@@ -28,6 +33,88 @@ struct RecordEntry {
     log_number: u32,
     value: Vec<u8>,
 }
+
+/*
+implementation taken from
+https://github.com/adambcomer/database-engine/blob/master/src/wal.rs
+*/
+pub struct WriteAheadLog {
+    path: PathBuf,
+    file: BufWriter<File>,
+    current_block: Vec<u8>,
+    current_log_number:u32,
+}
+
+impl WriteAheadLog {
+    pub fn new(dir: &str) -> io::Result<Self> {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_micros();
+
+        let path = Path::new(dir).join(timestamp.to_string() + ".wal");
+        let file = OpenOptions::new().append(true).create(true).open(&path)?;
+        let file = BufWriter::new(file);
+
+        Ok(WriteAheadLog { path, file, current_block: vec![], current_log_number:0 })
+    }
+
+    /// Creates a WAL from an existing file path.
+    pub fn from_path(path: &str) -> io::Result<Self> {
+        let file = OpenOptions::new().append(true).create(true).open(&path)?;
+        let file = BufWriter::new(file);
+        Ok(WriteAheadLog {
+            path: PathBuf::from(path),
+            file,
+            current_block: vec![],
+            current_log_number:0
+        })
+    }
+
+    pub fn append_entry(&mut self, mut entry : Vec<u8>) -> io::Result<()> {
+        if self.current_block.len()+(HEADER_SIZE as usize) < (BLOCK_SIZE as usize) {
+            if self.current_block.len()+(HEADER_SIZE as usize)+entry.len()<= (BLOCK_SIZE as usize) {
+                self.append_record(FULL, entry);
+            } else {
+                let available_buffer_len=(BLOCK_SIZE as usize)-self.current_block.len()-(HEADER_SIZE as usize);
+                let entry_part=entry.drain(0..available_buffer_len).collect();
+                self.append_record(FIRST, entry_part);
+                self.file.write_all(&self.current_block);
+                self.current_block.clear();
+                while entry.len()+(HEADER_SIZE as usize)>(BLOCK_SIZE as usize) {
+                    let available_buffer_len=(BLOCK_SIZE as usize)-self.current_block.len()-(HEADER_SIZE as usize);
+                    let entry_part=entry.drain(0..available_buffer_len).collect();
+                    self.append_record(MIDDLE, entry_part);
+                    self.file.write_all(&self.current_block);
+                    self.current_block.clear();
+                }
+                let available_buffer_len=(BLOCK_SIZE as usize)-self.current_block.len()-(HEADER_SIZE as usize);
+                let entry_part=entry.drain(0..available_buffer_len).collect();
+                if entry.len()+(HEADER_SIZE as usize)==(BLOCK_SIZE as usize) {
+                    self.append_record(MIDDLE, entry_part);
+                    self.file.write_all(&self.current_block);
+                    self.current_block.clear();
+                } else {
+                    self.append_record(LAST, entry_part);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn append_record(&mut self, entry_type:u8, mut entry : Vec<u8>) -> io::Result<()> {
+        let crc:u8=0;
+        self.current_block.append(&mut Vec::from(crc.to_be_bytes()));
+        let size:u16= entry.len() as u16;
+        self.current_block.append(&mut Vec::from(size.to_be_bytes()));
+        self.current_block.append(&mut Vec::from(entry_type.to_be_bytes()));
+        self.current_log_number+=1;
+        self.current_block.append(&mut Vec::from(self.current_log_number.to_be_bytes()));
+        self.current_block.append(&mut entry);
+        Ok(())
+    }
+}
+
 
 pub struct RecordEntryIterator {
     reader: BufReader<File>,
@@ -69,6 +156,8 @@ impl RecordEntryIterator {
         }
         None
     }
+
+
 }
 
 impl Iterator for RecordEntryIterator {
