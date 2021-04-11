@@ -1,5 +1,7 @@
 pub mod network;
 pub mod common;
+mod log;
+
 use crate::ServerState::{Follower, Candidate, Leader};
 use crate::common::*;
 use crate::network::*;
