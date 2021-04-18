@@ -152,6 +152,7 @@ pub struct RaftRPCClientImpl {
     address: String,
     opt_channel: Mutex<Option<Channel>>,
     opt_channel_req_vote: Mutex<Option<Channel>>,
+    runtime: Arc<Runtime>,
 }
 
 
@@ -161,6 +162,7 @@ impl RaftRPCClientImpl {
             address,
             opt_channel: Mutex::new(None),
             opt_channel_req_vote: Mutex::new(None),
+            runtime: Arc::new(tokio::runtime::Runtime::new().unwrap()),
         }
     }
 
@@ -269,7 +271,8 @@ impl RaftRPCClientImpl {
 impl ClientChannel for RaftRPCClientImpl {
 
     fn send_request_vote(&self, request_vote_request: RequestVoteRequest) -> Result<RequestVoteResponse,()> {
-        let rt = tokio::runtime::Runtime::new().unwrap();
+        //let rt = tokio::runtime::Runtime::new().unwrap();
+        let rt = self.runtime.clone();
         let response_result=rt.block_on(self.send_request_vote_async(request_vote_request));
         //questo potrebbe non rispondere, gestire con un result
         return if response_result.is_ok() {
@@ -281,7 +284,8 @@ impl ClientChannel for RaftRPCClientImpl {
     }
 
     fn send_append_entries(&self, append_entries_request: AppendEntriesRequest) -> Result<AppendEntriesResponse, ()> {
-        let rt = tokio::runtime::Runtime::new().unwrap();
+        //let rt = tokio::runtime::Runtime::new().unwrap();
+        let rt = self.runtime.clone();
         println!("send_append_entries grpc sending at {}", Utc::now().timestamp_millis());
         let response_result=rt.block_on(
             self.send_append_entries_async(append_entries_request));

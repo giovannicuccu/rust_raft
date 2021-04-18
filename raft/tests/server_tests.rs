@@ -295,7 +295,7 @@ impl NetworkChannel for RaftTestNetworkChannel {
 /*
 questo si può mettere anche dentro la impl di una struct
  */
-//#[test]
+#[test]
 fn testThreeServers() {
     let server_config_1=ServerConfig::new(1,65,100, 9090,vec![String::from("server2"),String::from("server3")]);
     let server_config_2=ServerConfig::new(2,65,100, 9091,vec![String::from("server1"),String::from("server3")]);
