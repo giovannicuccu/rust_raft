@@ -82,6 +82,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "crc"
+version = "2.0.0-rc.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dee8258c95a900d2809779ede5f1778d34429dec756c2ba3f952b52b3db28e08"
+dependencies = [
+ "crc-catalog",
+]
+
+[[package]]
+name = "crc-catalog"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ccaeedb56da03b09f598226e25e80088cb4cd25f316e6e4df7d695f0feeb1403"
+
+[[package]]
 name = "crossbeam-channel"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -629,6 +644,7 @@ name = "raft"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "crc",
  "futures",
  "prost",
  "rand",

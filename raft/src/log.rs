@@ -14,8 +14,9 @@ use std::path::{PathBuf, Path};
 use std::io;
 use std::convert::TryInto;
 use std::time::{SystemTime, UNIX_EPOCH};
+use crc::{Crc, CRC_32_ISCSI};
 
-const BLOCK_SIZE: u16 = u16::MAX;
+const BLOCK_SIZE: u16 = 32768;
 
 const HEADER_SIZE: u8 = 11;
 
@@ -24,7 +25,7 @@ const FIRST: u8 = 2;
 const MIDDLE: u8 = 3;
 const LAST: u8 = 4;
 
-
+const CASTAGNOLI: Crc<u32> = Crc::<u32>::new(&CRC_32_ISCSI);
 
 struct RecordEntry {
     crc: u32,
@@ -72,8 +73,12 @@ impl WriteAheadLog {
     }
 
     pub fn append_entry(&mut self, mut entry : Vec<u8>) -> io::Result<()> {
-        if self.current_block.len()+(HEADER_SIZE as usize) < (BLOCK_SIZE as usize) {
+        /*
+        TODO: pensare posso scrivere una entry vuota?
+         */
+        if self.current_block.len()+(HEADER_SIZE as usize) <= (BLOCK_SIZE as usize) {
             if self.current_block.len()+(HEADER_SIZE as usize)+entry.len()<= (BLOCK_SIZE as usize) {
+                println!("writing record<block_size");
                 self.append_record(FULL, entry);
             } else {
                 let available_buffer_len=(BLOCK_SIZE as usize)-self.current_block.len()-(HEADER_SIZE as usize);
@@ -88,30 +93,57 @@ impl WriteAheadLog {
                     self.file.write_all(&self.current_block);
                     self.current_block.clear();
                 }
-                let available_buffer_len=(BLOCK_SIZE as usize)-self.current_block.len()-(HEADER_SIZE as usize);
+                self.append_record(LAST, entry);
+                /*let available_buffer_len=(BLOCK_SIZE as usize)-self.current_block.len()-(HEADER_SIZE as usize);
                 let entry_part=entry.drain(0..available_buffer_len).collect();
                 if entry.len()+(HEADER_SIZE as usize)==(BLOCK_SIZE as usize) {
                     self.append_record(MIDDLE, entry_part);
                     self.file.write_all(&self.current_block);
                     self.current_block.clear();
                 } else {
-                    self.append_record(LAST, entry_part);
-                }
+                    self.append_record(LAST, entry);
+                }*/
             }
         }
+        /*
+        TODO aggiungere gestione errore per else che non dovrebbe mai verificarsi
+         */
         Ok(())
     }
 
     fn append_record(&mut self, entry_type:u8, mut entry : Vec<u8>) -> io::Result<()> {
-        let crc:u8=0;
-        self.current_block.append(&mut Vec::from(crc.to_be_bytes()));
+        let crc:u32=CASTAGNOLI.checksum(&entry);
+        self.current_block.append(&mut Vec::from(crc.to_le_bytes()));
         let size:u16= entry.len() as u16;
-        self.current_block.append(&mut Vec::from(size.to_be_bytes()));
-        self.current_block.append(&mut Vec::from(entry_type.to_be_bytes()));
+        self.current_block.append(&mut Vec::from(size.to_le_bytes()));
+        self.current_block.append(&mut Vec::from(entry_type.to_le_bytes()));
         self.current_log_number+=1;
-        self.current_block.append(&mut Vec::from(self.current_log_number.to_be_bytes()));
+        self.current_block.append(&mut Vec::from(self.current_log_number.to_le_bytes()));
         self.current_block.append(&mut entry);
+        let slice=self.current_block.as_slice();
+        println!("size1={},size2={}",slice[4],slice[5]);
+        println!("wrote crc={},size={},entry_type={},log_number={}",crc,size, entry_type,self.current_log_number);
         Ok(())
+    }
+
+    pub fn flush(&mut self) -> io::Result<()> {
+        if self.current_block.len()>0 {
+            while  self.current_block.len()< BLOCK_SIZE as usize {
+                self.current_block.push(0);
+
+            }
+            self.file.write_all(&self.current_block);
+            self.current_block.clear();
+        }
+        self.file.flush()
+    }
+
+    pub fn path(&self) -> &PathBuf {
+        &self.path
+    }
+
+    pub const fn block_size() ->u16 {
+        BLOCK_SIZE
     }
 }
 
@@ -133,26 +165,35 @@ impl RecordEntryIterator {
 
 impl RecordEntryIterator {
     fn next_record(&mut self) -> Option<RecordEntry> {
-        if self.current_buffer.len()<11  {
+        if self.current_buffer.len()<HEADER_SIZE as usize  {
             let mut new_buffer=[0; BLOCK_SIZE as usize];
             if self.reader.read_exact(&mut new_buffer).is_err() {
+                println!("next_record is err first_read");
                 return None;
             }
             self.current_buffer=Vec::from(new_buffer);
         }
-        if self.current_buffer.len()>11  {
+        if self.current_buffer.len()>=HEADER_SIZE as usize  {
             let crc = u32::from_le_bytes(self.current_buffer.drain(0..4).collect::<Vec<u8>>().try_into().expect("crc sub array with incorrect length"));
-            let size = u16::from_le_bytes(self.current_buffer.drain(4..6).collect::<Vec<u8>>().try_into().expect("crc sub array with incorrect length"));
-            let entry_type = u8::from_le_bytes(self.current_buffer.drain(6..7).collect::<Vec<u8>>().try_into().expect("crc sub array with incorrect length"));
-            let log_number = u32::from_le_bytes(self.current_buffer.drain(7..11).collect::<Vec<u8>>().try_into().expect("crc sub array with incorrect length"));
-            let value=self.current_buffer.drain(11..(11+size) as usize).collect::<Vec<u8>>();
-            return Some(RecordEntry {
-                crc,
-                size,
-                entry_type,
-                log_number,
-                value,
-            });
+            let size = u16::from_le_bytes(self.current_buffer.drain(0..2).collect::<Vec<u8>>().try_into().expect("size sub array with incorrect length"));
+            let entry_type = u8::from_le_bytes(self.current_buffer.drain(0..1).collect::<Vec<u8>>().try_into().expect("entry type sub array with incorrect length"));
+            let log_number = u32::from_le_bytes(self.current_buffer.drain(0..4).collect::<Vec<u8>>().try_into().expect("log number sub array with incorrect length"));
+            let value=self.current_buffer.drain(0..size as usize).collect::<Vec<u8>>();
+            let calculated_crc=CASTAGNOLI.checksum(&value);
+            if crc!=calculated_crc {
+                println!("next_record crc err  crc={}, calculated_crc={} size={},entry_type={},log_number={}", crc, calculated_crc, size,entry_type,log_number, );
+            }
+            return if crc == calculated_crc {
+                Some(RecordEntry {
+                    crc,
+                    size,
+                    entry_type,
+                    log_number,
+                    value,
+                })
+            } else {
+                None
+            }
         }
         None
     }
