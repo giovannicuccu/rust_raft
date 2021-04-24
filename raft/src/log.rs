@@ -79,21 +79,21 @@ impl WriteAheadLog {
         if self.current_block.len()+(HEADER_SIZE as usize) <= (BLOCK_SIZE as usize) {
             if self.current_block.len()+(HEADER_SIZE as usize)+entry.len()<= (BLOCK_SIZE as usize) {
                 println!("writing record<block_size");
-                self.append_record(FULL, entry);
+                self.append_record(FULL, entry)?;
             } else {
                 let available_buffer_len=(BLOCK_SIZE as usize)-self.current_block.len()-(HEADER_SIZE as usize);
                 let entry_part=entry.drain(0..available_buffer_len).collect();
-                self.append_record(FIRST, entry_part);
-                self.file.write_all(&self.current_block);
+                self.append_record(FIRST, entry_part)?;
+                self.file.write_all(&self.current_block)?;
                 self.current_block.clear();
                 while entry.len()+(HEADER_SIZE as usize)>(BLOCK_SIZE as usize) {
                     let available_buffer_len=(BLOCK_SIZE as usize)-self.current_block.len()-(HEADER_SIZE as usize);
                     let entry_part=entry.drain(0..available_buffer_len).collect();
-                    self.append_record(MIDDLE, entry_part);
-                    self.file.write_all(&self.current_block);
+                    self.append_record(MIDDLE, entry_part)?;
+                    self.file.write_all(&self.current_block)?;
                     self.current_block.clear();
                 }
-                self.append_record(LAST, entry);
+                self.append_record(LAST, entry)?;
                 /*let available_buffer_len=(BLOCK_SIZE as usize)-self.current_block.len()-(HEADER_SIZE as usize);
                 let entry_part=entry.drain(0..available_buffer_len).collect();
                 if entry.len()+(HEADER_SIZE as usize)==(BLOCK_SIZE as usize) {
@@ -132,7 +132,7 @@ impl WriteAheadLog {
                 self.current_block.push(0);
 
             }
-            self.file.write_all(&self.current_block);
+            self.file.write_all(&self.current_block)?;
             self.current_block.clear();
         }
         self.file.flush()
