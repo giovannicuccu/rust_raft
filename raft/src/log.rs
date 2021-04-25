@@ -47,6 +47,28 @@ pub struct WriteAheadLog {
     current_block: Vec<u8>,
 }
 
+pub struct WriteAheadLogEntry {
+    term: TermType,
+    index: IndexType,
+    data: Vec<u8>,
+}
+
+impl WriteAheadLogEntry {
+    pub fn new(term: u32, index: u32, data: Vec<u8>) -> Self {
+        WriteAheadLogEntry { term, index, data }
+    }
+    pub fn term(&self) -> u32 {
+        self.term
+    }
+    pub fn index(&self) -> u32 {
+        self.index
+    }
+    pub fn data(&self) -> &Vec<u8> {
+        &self.data
+    }
+}
+
+
 impl WriteAheadLog {
     pub fn new(dir: &str) -> io::Result<Self> {
         let timestamp = SystemTime::now()
@@ -72,37 +94,28 @@ impl WriteAheadLog {
         })
     }
 
-    pub fn append_entry(&mut self, term: TermType, index: IndexType, mut entry : Vec<u8>) -> io::Result<()> {
+    pub fn append_entry(&mut self, mut entry: WriteAheadLogEntry ) -> io::Result<()> {
         /*
         TODO: pensare posso scrivere una entry vuota?
          */
         if self.current_block.len()+(HEADER_SIZE as usize) <= (BLOCK_SIZE as usize) {
-            if self.current_block.len()+(HEADER_SIZE as usize)+entry.len()<= (BLOCK_SIZE as usize) {
+            if self.current_block.len()+(HEADER_SIZE as usize)+entry.data.len()<= (BLOCK_SIZE as usize) {
                 println!("writing record<block_size");
-                self.append_record(FULL, term, index,  entry)?;
+                self.append_record(FULL, entry.term, entry.index,  entry.data)?;
             } else {
                 let available_buffer_len=(BLOCK_SIZE as usize)-self.current_block.len()-(HEADER_SIZE as usize);
-                let entry_part=entry.drain(0..available_buffer_len).collect();
-                self.append_record(FIRST, term, index,entry_part)?;
+                let entry_part=entry.data.drain(0..available_buffer_len).collect();
+                self.append_record(FIRST, entry.term, entry.index,entry_part)?;
                 self.file.write_all(&self.current_block)?;
                 self.current_block.clear();
-                while entry.len()+(HEADER_SIZE as usize)>(BLOCK_SIZE as usize) {
+                while entry.data.len()+(HEADER_SIZE as usize)>(BLOCK_SIZE as usize) {
                     let available_buffer_len=(BLOCK_SIZE as usize)-self.current_block.len()-(HEADER_SIZE as usize);
-                    let entry_part=entry.drain(0..available_buffer_len).collect();
-                    self.append_record(MIDDLE, term, index,entry_part)?;
+                    let entry_part=entry.data.drain(0..available_buffer_len).collect();
+                    self.append_record(MIDDLE, entry.term, entry.index,entry_part)?;
                     self.file.write_all(&self.current_block)?;
                     self.current_block.clear();
                 }
-                self.append_record(LAST, term, index,entry)?;
-                /*let available_buffer_len=(BLOCK_SIZE as usize)-self.current_block.len()-(HEADER_SIZE as usize);
-                let entry_part=entry.drain(0..available_buffer_len).collect();
-                if entry.len()+(HEADER_SIZE as usize)==(BLOCK_SIZE as usize) {
-                    self.append_record(MIDDLE, entry_part);
-                    self.file.write_all(&self.current_block);
-                    self.current_block.clear();
-                } else {
-                    self.append_record(LAST, entry);
-                }*/
+                self.append_record(LAST, entry.term, entry.index,entry.data)?;
             }
         }
         /*
@@ -204,10 +217,10 @@ impl RecordEntryIterator {
 }
 
 impl Iterator for RecordEntryIterator {
-    type Item = Vec<u8>;
+    type Item = WriteAheadLogEntry;
 
     /// Gets the next entry in the WAL file.
-    fn next(&mut self) -> Option<Vec<u8>> {
+    fn next(&mut self) -> Option<WriteAheadLogEntry> {
         let mut log_value: Vec<u8>=Vec::new();
         //Posso farlo con una ma lo faccio con due per maggiore chiarezza
         let mut expect_first_or_full=true;
@@ -216,7 +229,7 @@ impl Iterator for RecordEntryIterator {
                 log_value.append(&mut actual_record.value);
                 if actual_record.entry_type==FULL {
                     return if expect_first_or_full {
-                        Some(log_value)
+                        Some(WriteAheadLogEntry{ term:actual_record.term, index: actual_record.index, data:log_value})
                     } else {
                         None
                     }
@@ -236,7 +249,7 @@ impl Iterator for RecordEntryIterator {
                }
                if actual_record.entry_type==LAST {
                    return if expect_middle_or_last {
-                       Some(log_value)
+                       Some(WriteAheadLogEntry{ term:actual_record.term, index: actual_record.index, data:log_value})
                    } else {
                        None
                    }

@@ -1,7 +1,7 @@
 use rand::Rng;
 use std::fs::{create_dir, OpenOptions, metadata};
 use std::io::BufReader;
-use raft::log::{WriteAheadLog, RecordEntryIterator};
+use raft::log::{WriteAheadLog, RecordEntryIterator, WriteAheadLogEntry};
 use std::{env};
 
 fn create_vector_data_for_test(len: u32) -> Vec<u8> {
@@ -41,7 +41,7 @@ fn test_read_and_write_single_block(input_data_len: u32, expected_wal_blocks: u1
     let data1: Vec<u8>= create_vector_data_for_test(input_data_len);
 
     let mut wal = WriteAheadLog::new(dir.as_str()).unwrap();
-    wal.append_entry(1,1,data1).unwrap();
+    wal.append_entry(WriteAheadLogEntry::new(1, 1,data1)).unwrap();
     wal.flush().unwrap();
 
     let file_metadata = metadata(&wal.path());
@@ -56,7 +56,7 @@ fn test_read_and_write_single_block(input_data_len: u32, expected_wal_blocks: u1
     assert!(opt_entry.is_some());
     let data_read=opt_entry.unwrap();
     let data: Vec<u8>= create_vector_data_for_test(input_data_len);
-    assert_eq!(data_read,data);
+    assert_eq!(*data_read.data(),data);
     println!("before getting none");
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_none());
@@ -79,9 +79,9 @@ fn test_write_and_read_two_record() {
 
     let mut wal = WriteAheadLog::new(dir.as_str()).unwrap();
     let data1: Vec<u8>=vec![1,2,3,4];
-    wal.append_entry(1,2,data1).unwrap();
+    wal.append_entry(WriteAheadLogEntry::new(1, 1,data1)).unwrap();
     let data2: Vec<u8>=vec![5,6,7,8];
-    wal.append_entry(1,2, data2).unwrap();
+    wal.append_entry(WriteAheadLogEntry::new(1, 2,data2)).unwrap();
     wal.flush().unwrap();
     /*
     TODO capire perchè
@@ -97,12 +97,12 @@ fn test_write_and_read_two_record() {
     assert!(opt_entry.is_some());
     let data_read=opt_entry.unwrap();
     let data: Vec<u8>=vec![1,2,3,4];
-    assert_eq!(data_read,data);
+    assert_eq!(*data_read.data(),data);
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_some());
     let data_read=opt_entry.unwrap();
     let data: Vec<u8>=vec![5,6,7,8];
-    assert_eq!(data_read,data);
+    assert_eq!(*data_read.data(),data);
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_none());
 }
@@ -118,13 +118,13 @@ fn test_write_and_read_four_record() {
 
     let mut wal = WriteAheadLog::new(dir.as_str()).unwrap();
     let data1: Vec<u8>=create_vector_data_for_test(100);
-    wal.append_entry(1,1,data1).unwrap();
+    wal.append_entry(WriteAheadLogEntry::new(1, 1,data1)).unwrap();
     let data2: Vec<u8>=create_vector_data_for_test_01(150);
-    wal.append_entry(1,2,data2).unwrap();
+    wal.append_entry(WriteAheadLogEntry::new(1, 2,data2)).unwrap();
     let data3: Vec<u8>=create_vector_data_for_test_02(250);
-    wal.append_entry(1,3,data3).unwrap();
+    wal.append_entry(WriteAheadLogEntry::new(1, 3,data3)).unwrap();
     let data4: Vec<u8>=create_vector_data_for_test_03(350);
-    wal.append_entry(1,4,data4).unwrap();
+    wal.append_entry(WriteAheadLogEntry::new(1, 4,data4)).unwrap();
     wal.flush().unwrap();
     /*
     TODO capire perchè
@@ -141,22 +141,22 @@ fn test_write_and_read_four_record() {
     assert!(opt_entry.is_some());
     let data_read=opt_entry.unwrap();
     let data: Vec<u8>=create_vector_data_for_test(100);
-    assert_eq!(data_read,data);
+    assert_eq!(*data_read.data(),data);
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_some());
     let data_read=opt_entry.unwrap();
     let data: Vec<u8>=create_vector_data_for_test_01(150);
-    assert_eq!(data_read,data);
+    assert_eq!(*data_read.data(),data);
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_some());
     let data_read=opt_entry.unwrap();
     let data: Vec<u8>=create_vector_data_for_test_02(250);
-    assert_eq!(data_read,data);
+    assert_eq!(*data_read.data(),data);
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_some());
     let data_read=opt_entry.unwrap();
     let data: Vec<u8>=create_vector_data_for_test_03(350);
-    assert_eq!(data_read,data);
+    assert_eq!(*data_read.data(),data);
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_none());
 }
@@ -197,9 +197,9 @@ fn test_write_and_read_two_records_with_only_header_part() {
     let mut wal = WriteAheadLog::new(dir.as_str()).unwrap();
 
     let data1: Vec<u8>=create_vector_data_for_test((WriteAheadLog::block_size() as usize - 30 as usize) as u32);
-    wal.append_entry(1,2,data1).unwrap();
+    wal.append_entry(WriteAheadLogEntry::new(1, 1,data1)).unwrap();
     let data2: Vec<u8>=vec![5,6,7,8];
-    wal.append_entry(1,2,data2).unwrap();
+    wal.append_entry(WriteAheadLogEntry::new(1, 2,data2)).unwrap();
     wal.flush().unwrap();
 
     let file_metadata = metadata(&wal.path());
@@ -210,12 +210,12 @@ fn test_write_and_read_two_records_with_only_header_part() {
     assert!(opt_entry.is_some());
     let data_read=opt_entry.unwrap();
     let data: Vec<u8>=create_vector_data_for_test((WriteAheadLog::block_size() as usize - 30 as usize) as u32);
-    assert_eq!(data_read,data);
+    assert_eq!(*data_read.data(),data);
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_some());
     let data_read=opt_entry.unwrap();
     let data: Vec<u8>=vec![5,6,7,8];
-    assert_eq!(data_read,data);
+    assert_eq!(*data_read.data(),data);
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_none());
 }
