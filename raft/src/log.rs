@@ -8,10 +8,10 @@ ogni record ha un checksum per capire se è valido o meno
  */
 
 
-use std::io::{BufReader, Read, BufWriter, Write};
-use std::fs::{File, OpenOptions};
+use std::io::{BufReader, Read, BufWriter, Write, Seek, SeekFrom, Error, ErrorKind};
+use std::fs::{File, OpenOptions, metadata};
 use std::path::{PathBuf, Path};
-use std::io;
+use std::{io, env, fs};
 use std::convert::TryInto;
 use std::time::{SystemTime, UNIX_EPOCH};
 use crc::{Crc, CRC_32_ISCSI};
@@ -43,7 +43,7 @@ https://github.com/adambcomer/database-engine/blob/master/src/wal.rs
 */
 pub struct WriteAheadLog {
     path: PathBuf,
-    file: BufWriter<File>,
+    writer: BufWriter<File>,
     current_block: Vec<u8>,
 }
 
@@ -80,7 +80,7 @@ impl WriteAheadLog {
         let file = OpenOptions::new().append(true).create(true).open(&path)?;
         let file = BufWriter::new(file);
 
-        Ok(WriteAheadLog { path, file, current_block: vec![]})
+        Ok(WriteAheadLog { path, writer: file, current_block: vec![]})
     }
 
     /// Creates a WAL from an existing file path.
@@ -89,7 +89,7 @@ impl WriteAheadLog {
         let file = BufWriter::new(file);
         Ok(WriteAheadLog {
             path: PathBuf::from(path),
-            file,
+            writer: file,
             current_block: vec![]
         })
     }
@@ -106,13 +106,13 @@ impl WriteAheadLog {
                 let available_buffer_len=(BLOCK_SIZE as usize)-self.current_block.len()-(HEADER_SIZE as usize);
                 let entry_part=entry.data.drain(0..available_buffer_len).collect();
                 self.append_record(FIRST, entry.term, entry.index,entry_part)?;
-                self.file.write_all(&self.current_block)?;
+                self.writer.write_all(&self.current_block)?;
                 self.current_block.clear();
                 while entry.data.len()+(HEADER_SIZE as usize)>(BLOCK_SIZE as usize) {
                     let available_buffer_len=(BLOCK_SIZE as usize)-self.current_block.len()-(HEADER_SIZE as usize);
                     let entry_part=entry.data.drain(0..available_buffer_len).collect();
                     self.append_record(MIDDLE, entry.term, entry.index,entry_part)?;
-                    self.file.write_all(&self.current_block)?;
+                    self.writer.write_all(&self.current_block)?;
                     self.current_block.clear();
                 }
                 self.append_record(LAST, entry.term, entry.index,entry.data)?;
@@ -139,16 +139,51 @@ impl WriteAheadLog {
         Ok(())
     }
 
+    pub fn seek_and_clear_after(&mut self, term: TermType, index: IndexType) -> io::Result<()> {
+        self.flush();
+        let mut file = OpenOptions::new().read(true).write(true).open(&self.path)?;
+        //println!("path={}", self.path.display());
+        let mut log_reader=RecordEntryIterator::new(self.path.clone()).unwrap();
+        let mut found=false;
+        while let Some(wal_entry)=log_reader.next(){
+        //for wal_entry in log_reader {
+            //println!("entry term={}, index={}", wal_entry.term, wal_entry.index);
+            if wal_entry.term==term && wal_entry.index==index {
+                //println!("entry found");
+                found=true;
+                break;
+            }
+        }
+        if !found {
+            return Err(Error::new(ErrorKind::Other, "Term and index not found"));
+        }
+        let blocks_read=log_reader.blocks_read;
+        let offset_in_block=(BLOCK_SIZE - log_reader.current_buffer.len() as u16) as usize;
+        let new_file_size=((blocks_read-1) * BLOCK_SIZE as u32) as u64;
+        file.seek(SeekFrom::Start(new_file_size));
+
+        self.current_block.clear();
+        let mut buffer = vec![0u8; offset_in_block];
+        //println!("buffer_size={}",offset_in_block);
+        file.read_exact(&mut *buffer)?;
+        self.current_block.append(&mut buffer);
+        file.set_len(new_file_size)?;
+        //println!("new_file_size={}",new_file_size);
+        file.seek(SeekFrom::Start(new_file_size));
+        self.writer = BufWriter::new(file);
+        Ok(())
+    }
+
     pub fn flush(&mut self) -> io::Result<()> {
         if self.current_block.len()>0 {
             while  self.current_block.len()< BLOCK_SIZE as usize {
                 self.current_block.push(0);
 
             }
-            self.file.write_all(&self.current_block)?;
+            self.writer.write_all(&self.current_block)?;
             self.current_block.clear();
         }
-        self.file.flush()
+        self.writer.flush()
     }
 
     pub fn path(&self) -> &PathBuf {
@@ -164,6 +199,7 @@ impl WriteAheadLog {
 pub struct RecordEntryIterator {
     reader: BufReader<File>,
     current_buffer: Vec<u8>,
+    blocks_read: u32,
 }
 
 impl RecordEntryIterator {
@@ -171,7 +207,7 @@ impl RecordEntryIterator {
     pub fn new(path: PathBuf) -> io::Result<Self> {
         let file = OpenOptions::new().read(true).open(path)?;
         let reader = BufReader::new(file);
-        Ok(RecordEntryIterator { reader, current_buffer: vec![] })
+        Ok(RecordEntryIterator { reader, current_buffer: vec![],blocks_read: 0 })
     }
 }
 
@@ -184,6 +220,7 @@ impl RecordEntryIterator {
                 println!("next_record is err first_read");
                 return None;
             }
+            self.blocks_read+=1;
             self.current_buffer=Vec::from(new_buffer);
         }
         if self.current_buffer.len()>=HEADER_SIZE as usize  {
