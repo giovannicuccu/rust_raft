@@ -44,6 +44,7 @@ https://github.com/adambcomer/database-engine/blob/master/src/wal.rs
 pub struct WriteAheadLog {
     path: PathBuf,
     writer: BufWriter<File>,
+    blocks_written: u32,
     current_block: Vec<u8>,
 }
 
@@ -80,17 +81,46 @@ impl WriteAheadLog {
         let file = OpenOptions::new().append(true).create(true).open(&path)?;
         let file = BufWriter::new(file);
 
-        Ok(WriteAheadLog { path, writer: file, current_block: vec![]})
+        Ok(WriteAheadLog { path, writer: file, blocks_written: 0, current_block: vec![]})
     }
 
     /// Creates a WAL from an existing file path.
     pub fn from_path(path: &str) -> io::Result<Self> {
-        let file = OpenOptions::new().append(true).create(true).open(&path)?;
-        let file = BufWriter::new(file);
+
+        let mut log_reader=RecordEntryIterator::new(PathBuf::from(path)).unwrap();
+        while let Some(_wal_entry)=log_reader.next(){ println!("wal_read buf_len {}",log_reader.current_buffer.len());}
+        let blocks_read=log_reader.blocks_read;
+        println!("wal_read buf_len {}",log_reader.current_buffer.len());
+        let offset_in_block=(BLOCK_SIZE - log_reader.current_buffer.len() as u16) as usize;
+        println!("blocks_read={} offset in block={}, buf_len={}", blocks_read, offset_in_block,log_reader.current_buffer.len());
+
+
+        let mut file = OpenOptions::new().read(true).write(true).open(PathBuf::from(path))?;
+        let mut current_block = vec![];
+        let mut seek_position = ((blocks_read) * BLOCK_SIZE as u32) as u64;
+        if offset_in_block!= BLOCK_SIZE as usize {
+            seek_position = ((blocks_read-1) * BLOCK_SIZE as u32) as u64;
+            file.seek(SeekFrom::Start(seek_position));
+            let mut new_buffer = [0; BLOCK_SIZE as usize];
+            {
+                let mut reader = BufReader::new(file);
+
+                if reader.read_exact(&mut new_buffer).is_err() {
+                    return Err(Error::new(ErrorKind::Other, "unable to read from file ".to_owned() + path));
+                }
+            }
+            current_block = Vec::from(new_buffer);
+            current_block.truncate(offset_in_block);
+        }
+
+        let mut file = OpenOptions::new().read(true).write(true).open(PathBuf::from(path))?;
+        file.seek(SeekFrom::Start(seek_position));
+        let writer = BufWriter::new(file);
         Ok(WriteAheadLog {
             path: PathBuf::from(path),
-            writer: file,
-            current_block: vec![]
+            writer,
+            blocks_written: blocks_read-1,
+            current_block
         })
     }
 
@@ -102,25 +132,39 @@ impl WriteAheadLog {
             if self.current_block.len()+(HEADER_SIZE as usize)+entry.data.len()<= (BLOCK_SIZE as usize) {
                 println!("writing record<block_size");
                 self.append_record(FULL, entry.term, entry.index,  entry.data)?;
+                if self.current_block.len()== (BLOCK_SIZE as usize) {
+                    self.writer.write_all(&self.current_block)?;
+                    self.current_block.clear();
+                    self.blocks_written+=1;
+                }
             } else {
                 let available_buffer_len=(BLOCK_SIZE as usize)-self.current_block.len()-(HEADER_SIZE as usize);
                 let entry_part=entry.data.drain(0..available_buffer_len).collect();
                 self.append_record(FIRST, entry.term, entry.index,entry_part)?;
                 self.writer.write_all(&self.current_block)?;
                 self.current_block.clear();
+                self.blocks_written+=1;
                 while entry.data.len()+(HEADER_SIZE as usize)>(BLOCK_SIZE as usize) {
                     let available_buffer_len=(BLOCK_SIZE as usize)-self.current_block.len()-(HEADER_SIZE as usize);
                     let entry_part=entry.data.drain(0..available_buffer_len).collect();
                     self.append_record(MIDDLE, entry.term, entry.index,entry_part)?;
                     self.writer.write_all(&self.current_block)?;
                     self.current_block.clear();
+                    self.blocks_written+=1;
                 }
-                self.append_record(LAST, entry.term, entry.index,entry.data)?;
+                if entry.data.len()>0 {
+                    self.append_record(LAST, entry.term, entry.index, entry.data)?;
+                    if self.current_block.len() == (BLOCK_SIZE as usize) {
+                        self.writer.write_all(&self.current_block)?;
+                        self.current_block.clear();
+                        self.blocks_written += 1;
+                    }
+                }
             }
+        } else {
+            println!("self.current_block.len()={}",self.current_block.len());
+            return Err(Error::new(ErrorKind::Other, "Internal error incorrect current_block size "));
         }
-        /*
-        TODO aggiungere gestione errore per else che non dovrebbe mai verificarsi
-         */
         Ok(())
     }
 
@@ -146,6 +190,9 @@ impl WriteAheadLog {
         let mut log_reader=RecordEntryIterator::new(self.path.clone()).unwrap();
         let mut found=false;
         while let Some(wal_entry)=log_reader.next(){
+            /*
+           TODO: spiegare che iteratore consuma e ciclo wile no
+             */
         //for wal_entry in log_reader {
             //println!("entry term={}, index={}", wal_entry.term, wal_entry.index);
             if wal_entry.term==term && wal_entry.index==index {
@@ -176,12 +223,24 @@ impl WriteAheadLog {
 
     pub fn flush(&mut self) -> io::Result<()> {
         if self.current_block.len()>0 {
-            while  self.current_block.len()< BLOCK_SIZE as usize {
-                self.current_block.push(0);
-
+            let mut padded_with_zero=false;
+            if self.current_block.len()< BLOCK_SIZE as usize {
+                padded_with_zero=true;
+                while self.current_block.len() < BLOCK_SIZE as usize {
+                    self.current_block.push(0);
+                }
             }
             self.writer.write_all(&self.current_block)?;
-            self.current_block.clear();
+            if padded_with_zero {
+                let mut file = OpenOptions::new().read(true).write(true).open(&self.path)?;
+                let seek_position = ((self.blocks_written) * BLOCK_SIZE as u32) as u64;
+                file.seek(SeekFrom::Start(seek_position));
+                self.writer = BufWriter::new(file);
+            } else {
+                self.current_block.clear();
+                self.blocks_written+=1;
+            }
+
         }
         self.writer.flush()
     }
@@ -224,11 +283,23 @@ impl RecordEntryIterator {
             self.current_buffer=Vec::from(new_buffer);
         }
         if self.current_buffer.len()>=HEADER_SIZE as usize  {
+            let slice=&self.current_buffer[0..15];
+            let mut contains_entry=false;
+            for i in 0..15 {
+                if slice[i]!=0 {
+                    contains_entry=true;
+                    break;
+                }
+            }
+            if !contains_entry {
+                return None;
+            }
             let crc = u32::from_le_bytes(self.current_buffer.drain(0..4).collect::<Vec<u8>>().try_into().expect("crc sub array with incorrect length"));
             let size = u16::from_le_bytes(self.current_buffer.drain(0..2).collect::<Vec<u8>>().try_into().expect("size sub array with incorrect length"));
+
             let entry_type = u8::from_le_bytes(self.current_buffer.drain(0..1).collect::<Vec<u8>>().try_into().expect("entry type sub array with incorrect length"));
-            let term = u32::from_le_bytes(self.current_buffer.drain(0..4).collect::<Vec<u8>>().try_into().expect("log number sub array with incorrect length"));
-            let index = u32::from_le_bytes(self.current_buffer.drain(0..4).collect::<Vec<u8>>().try_into().expect("log number sub array with incorrect length"));
+            let term = u32::from_le_bytes(self.current_buffer.drain(0..4).collect::<Vec<u8>>().try_into().expect("term sub array with incorrect length"));
+            let index = u32::from_le_bytes(self.current_buffer.drain(0..4).collect::<Vec<u8>>().try_into().expect("index sub array with incorrect length"));
             let value=self.current_buffer.drain(0..size as usize).collect::<Vec<u8>>();
             let calculated_crc=CASTAGNOLI.checksum(&value);
             if crc!=calculated_crc {
