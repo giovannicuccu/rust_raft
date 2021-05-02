@@ -59,7 +59,7 @@ fn test_read_and_write_single_block(input_data_len: u32, expected_wal_blocks: u1
 
     let file = OpenOptions::new().read(true).open(&wal.path()).unwrap();
     let reader = BufReader::new(file);
-    let mut log_reader=RecordEntryIterator::new(wal.path().clone()).unwrap();
+    let mut log_reader=wal.record_entry_iterator().unwrap();
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_some());
     let data_read=opt_entry.unwrap();
@@ -96,7 +96,7 @@ fn test_write_and_read_two_record() {
     let file_metadata = metadata(&wal.path());
     assert_eq!(file_metadata.unwrap().len() as u16,WriteAheadLog::block_size());
     let file = OpenOptions::new().read(true).open(&wal.path()).unwrap();
-    let mut log_reader=RecordEntryIterator::new(wal.path().clone()).unwrap();
+    let mut log_reader=wal.record_entry_iterator().unwrap();
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_some());
     let data_read=opt_entry.unwrap();
@@ -136,7 +136,7 @@ fn test_write_and_read_four_record() {
     assert_eq!(file_metadata.unwrap().len() as u16,WriteAheadLog::block_size());
     let file = OpenOptions::new().read(true).open(&wal.path()).unwrap();
     let reader = BufReader::new(file);
-    let mut log_reader=RecordEntryIterator::new(wal.path().clone()).unwrap();
+    let mut log_reader=wal.record_entry_iterator().unwrap();
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_some());
     let data_read=opt_entry.unwrap();
@@ -201,7 +201,7 @@ fn test_write_and_read_two_records_with_only_header_part() {
     let file_metadata = metadata(&wal.path());
     assert_eq!(file_metadata.unwrap().len(),(WriteAheadLog::block_size()as usize*2 as usize) as u64);
     let file = OpenOptions::new().read(true).open(&wal.path()).unwrap();
-    let mut log_reader=RecordEntryIterator::new(wal.path().clone()).unwrap();
+    let mut log_reader=wal.record_entry_iterator().unwrap();
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_some());
     let data_read=opt_entry.unwrap();
@@ -245,7 +245,7 @@ fn test_create_and_reset_log() {
     let file_metadata = metadata(&wal.path());
     assert_eq!(file_metadata.unwrap().len(),(WriteAheadLog::block_size()as usize) as u64);
     let file = OpenOptions::new().read(true).open(&wal.path()).unwrap();
-    let mut log_reader=RecordEntryIterator::new(wal.path().clone()).unwrap();
+    let mut log_reader=wal.record_entry_iterator().unwrap();
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_some());
     let data_read=opt_entry.unwrap();
@@ -284,7 +284,7 @@ fn test_create_and_reset_log_01() {
     let file_metadata = metadata(&wal.path());
     assert_eq!(file_metadata.unwrap().len(),(WriteAheadLog::block_size()as usize) as u64);
     let file = OpenOptions::new().read(true).open(&wal.path()).unwrap();
-    let mut log_reader=RecordEntryIterator::new(wal.path().clone()).unwrap();
+    let mut log_reader=wal.record_entry_iterator().unwrap();
 
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_some());
@@ -322,7 +322,7 @@ fn test_create_and_flush_and_reopen() {
     let file_metadata = metadata(&wal.path());
     assert_eq!(file_metadata.unwrap().len(),(WriteAheadLog::block_size()as usize) as u64);
     let file = OpenOptions::new().read(true).open(&wal.path()).unwrap();
-    let mut log_reader=RecordEntryIterator::new(wal.path().clone()).unwrap();
+    let mut log_reader=wal.record_entry_iterator().unwrap();
 
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_some());
@@ -366,7 +366,7 @@ fn test_create_and_flush_multiple_times() {
     let file_metadata = metadata(&wal.path());
     assert_eq!(file_metadata.unwrap().len(),(WriteAheadLog::block_size()as usize) as u64);
     let file = OpenOptions::new().read(true).open(&wal.path()).unwrap();
-    let mut log_reader=RecordEntryIterator::new(wal.path().clone()).unwrap();
+    let mut log_reader=wal.record_entry_iterator().unwrap();
 
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_some());
@@ -415,7 +415,7 @@ fn test_create_and_flush_and_reopen_block_boundary() {
     let file_metadata = metadata(&wal.path());
     assert_eq!(file_metadata.unwrap().len(),(WriteAheadLog::block_size()as usize*2) as u64);
     let file = OpenOptions::new().read(true).open(&wal.path()).unwrap();
-    let mut log_reader=RecordEntryIterator::new(wal.path().clone()).unwrap();
+    let mut log_reader=wal.record_entry_iterator().unwrap();
 
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_some());
@@ -451,7 +451,7 @@ fn test_create_and_flush_and_reopen_block_boundary_2_blocks() {
     let file_metadata = metadata(&wal.path());
     assert_eq!(file_metadata.unwrap().len(),(WriteAheadLog::block_size()as usize*3) as u64);
     let file = OpenOptions::new().read(true).open(&wal.path()).unwrap();
-    let mut log_reader=RecordEntryIterator::new(wal.path().clone()).unwrap();
+    let mut log_reader=wal.record_entry_iterator().unwrap();
 
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_some());
@@ -467,6 +467,49 @@ fn test_create_and_flush_and_reopen_block_boundary_2_blocks() {
     assert!(opt_entry.is_some());
     let data_read=opt_entry.unwrap();
     assert_eq!(*data_read.data(),create_vector_data_for_test_03(30));
+
+    let opt_entry=log_reader.next();
+    assert!(opt_entry.is_none());
+}
+
+#[test]
+fn test_create_and_read_without_flush() {
+    let dir = create_test_dir();
+
+    let mut wal = WriteAheadLog::new(dir.as_str()).unwrap();
+
+    let data1: Vec<u8> = create_vector_data_for_test(10);
+    wal.append_entry(WriteAheadLogEntry::new(1, 1, data1)).unwrap();
+    let data2: Vec<u8> = create_vector_data_for_test_01(15);
+    wal.append_entry(WriteAheadLogEntry::new(1, 2, data2)).unwrap();
+    let data2: Vec<u8> = create_vector_data_for_test_01(20);
+    wal.append_entry(WriteAheadLogEntry::new(1, 3, data2)).unwrap();
+
+
+    //wal.flush().unwrap();
+
+    let file_metadata = metadata(&wal.path());
+    assert_eq!(file_metadata.unwrap().len(),(WriteAheadLog::block_size()as usize) as u64);
+    let file = OpenOptions::new().read(true).open(&wal.path()).unwrap();
+    let mut log_reader=wal.record_entry_iterator().unwrap();
+
+    let opt_entry=log_reader.next();
+    assert!(opt_entry.is_some());
+    let data_read=opt_entry.unwrap();
+    let data: Vec<u8>=create_vector_data_for_test(10);
+    assert_eq!(*data_read.data(),data);
+
+    let opt_entry=log_reader.next();
+    assert!(opt_entry.is_some());
+    let data_read=opt_entry.unwrap();
+    let data: Vec<u8>=create_vector_data_for_test_01(15);
+    assert_eq!(*data_read.data(),data);
+
+    let opt_entry=log_reader.next();
+    assert!(opt_entry.is_some());
+    let data_read=opt_entry.unwrap();
+    let data: Vec<u8>=create_vector_data_for_test_01(20);
+    assert_eq!(*data_read.data(),data);
 
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_none());

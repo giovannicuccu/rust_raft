@@ -43,7 +43,7 @@ https://github.com/adambcomer/database-engine/blob/master/src/wal.rs
 */
 pub struct WriteAheadLog {
     path: PathBuf,
-    writer: BufWriter<File>,
+    writer: File,
     blocks_written: u32,
     current_block: Vec<u8>,
 }
@@ -79,7 +79,7 @@ impl WriteAheadLog {
 
         let path = Path::new(dir).join(timestamp.to_string() + ".wal");
         let file = OpenOptions::new().append(true).create(true).open(&path)?;
-        let file = BufWriter::new(file);
+        //let file = BufWriter::new(file);
 
         Ok(WriteAheadLog { path, writer: file, blocks_written: 0, current_block: vec![]})
     }
@@ -115,10 +115,10 @@ impl WriteAheadLog {
 
         let mut file = OpenOptions::new().read(true).write(true).open(PathBuf::from(path))?;
         file.seek(SeekFrom::Start(seek_position));
-        let writer = BufWriter::new(file);
+        //let writer = BufWriter::new(file);
         Ok(WriteAheadLog {
             path: PathBuf::from(path),
-            writer,
+            writer: file,
             blocks_written: blocks_read-1,
             current_block
         })
@@ -215,7 +215,7 @@ impl WriteAheadLog {
         file.set_len(new_file_size)?;
         //println!("new_file_size={}",new_file_size);
         file.seek(SeekFrom::Start(new_file_size));
-        self.writer = BufWriter::new(file);
+        self.writer = file;
         Ok(())
     }
 
@@ -234,7 +234,7 @@ impl WriteAheadLog {
                 let mut file = OpenOptions::new().read(true).write(true).open(&self.path)?;
                 let seek_position = ((self.blocks_written) * BLOCK_SIZE as u32) as u64;
                 file.seek(SeekFrom::Start(seek_position));
-                self.writer = BufWriter::new(file);
+                self.writer = file;
                 self.current_block.truncate(non_padded_len);
             } else {
                 self.current_block.clear();
@@ -252,6 +252,10 @@ impl WriteAheadLog {
     pub const fn block_size() ->u16 {
         BLOCK_SIZE
     }
+
+    pub fn record_entry_iterator(&self) -> io::Result<RecordEntryIterator> {
+        RecordEntryIterator::new(self.path.clone())
+    }
 }
 
 
@@ -263,7 +267,7 @@ pub struct RecordEntryIterator {
 
 impl RecordEntryIterator {
     /// Creates a new RecordEntryIterator from a path to a Log file.
-    pub fn new(path: PathBuf) -> io::Result<Self> {
+    fn new(path: PathBuf) -> io::Result<Self> {
         let file = OpenOptions::new().read(true).open(path)?;
         let reader = BufReader::new(file);
         Ok(RecordEntryIterator { reader, current_buffer: vec![],blocks_read: 0 })
