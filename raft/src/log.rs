@@ -125,9 +125,9 @@ impl WriteAheadLog {
     }
 
     pub fn append_entry(&mut self, mut entry: WriteAheadLogEntry ) -> io::Result<()> {
-        /*
-        TODO: pensare posso scrivere una entry vuota?
-         */
+        if entry.data.len()==0 {
+            return Err(Error::new(ErrorKind::Other, "The entry data is empty"));
+        }
         if self.current_block.len()+(HEADER_SIZE as usize) <= (BLOCK_SIZE as usize) {
             if self.current_block.len()+(HEADER_SIZE as usize)+entry.data.len()<= (BLOCK_SIZE as usize) {
                 println!("writing record<block_size");
@@ -177,8 +177,6 @@ impl WriteAheadLog {
         self.current_block.append(&mut Vec::from(term.to_le_bytes()));
         self.current_block.append(&mut Vec::from(index.to_le_bytes()));
         self.current_block.append(&mut entry);
-        let slice=self.current_block.as_slice();
-        println!("size1={},size2={}",slice[4],slice[5]);
         println!("wrote crc={},size={},entry_type={},index={}",crc,size, entry_type,index);
         Ok(())
     }
@@ -224,6 +222,7 @@ impl WriteAheadLog {
     pub fn flush(&mut self) -> io::Result<()> {
         if self.current_block.len()>0 {
             let mut padded_with_zero=false;
+            let non_padded_len=self.current_block.len();
             if self.current_block.len()< BLOCK_SIZE as usize {
                 padded_with_zero=true;
                 while self.current_block.len() < BLOCK_SIZE as usize {
@@ -236,6 +235,7 @@ impl WriteAheadLog {
                 let seek_position = ((self.blocks_written) * BLOCK_SIZE as u32) as u64;
                 file.seek(SeekFrom::Start(seek_position));
                 self.writer = BufWriter::new(file);
+                self.current_block.truncate(non_padded_len);
             } else {
                 self.current_block.clear();
                 self.blocks_written+=1;

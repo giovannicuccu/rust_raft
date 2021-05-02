@@ -217,6 +217,15 @@ fn test_write_and_read_two_records_with_only_header_part() {
 }
 
 #[test]
+fn test_write_0_size_entry() {
+    let dir = create_test_dir();
+
+    let mut wal = WriteAheadLog::new(dir.as_str()).unwrap();
+
+    assert!(wal.append_entry(WriteAheadLogEntry::new(1, 1, vec![])).err().is_some());
+}
+
+#[test]
 fn test_create_and_reset_log() {
     let dir = create_test_dir();
 
@@ -329,6 +338,61 @@ fn test_create_and_flush_and_reopen() {
     assert!(opt_entry.is_some());
     let data_read=opt_entry.unwrap();
     assert_eq!(*data_read.data(),create_vector_data_for_test_03(30));
+
+    let opt_entry=log_reader.next();
+    assert!(opt_entry.is_none());
+}
+
+#[test]
+fn test_create_and_flush_multiple_times() {
+    let dir = create_test_dir();
+
+    let mut wal = WriteAheadLog::new(dir.as_str()).unwrap();
+
+    wal.append_entry(WriteAheadLogEntry::new(1, 1, create_vector_data_for_test(10))).unwrap();
+    wal.flush().unwrap();
+    wal.append_entry(WriteAheadLogEntry::new(1, 2, create_vector_data_for_test_01(15))).unwrap();
+    wal.flush().unwrap();
+    wal.append_entry(WriteAheadLogEntry::new(1, 3, create_vector_data_for_test_02(20))).unwrap();
+    wal.flush().unwrap();
+    wal.append_entry(WriteAheadLogEntry::new(1, 4, create_vector_data_for_test_03(25))).unwrap();
+    wal.flush().unwrap();
+
+    let path_str= wal.path().clone().into_os_string().into_string().unwrap();
+    let mut wal = WriteAheadLog::from_path(&*path_str).unwrap();
+    wal.append_entry(WriteAheadLogEntry::new(1, 5, create_vector_data_for_test_03(30))).unwrap();
+    wal.flush().unwrap();
+
+    let file_metadata = metadata(&wal.path());
+    assert_eq!(file_metadata.unwrap().len(),(WriteAheadLog::block_size()as usize) as u64);
+    let file = OpenOptions::new().read(true).open(&wal.path()).unwrap();
+    let mut log_reader=RecordEntryIterator::new(wal.path().clone()).unwrap();
+
+    let opt_entry=log_reader.next();
+    assert!(opt_entry.is_some());
+    let data_read=opt_entry.unwrap();
+    assert_eq!(*data_read.data(),create_vector_data_for_test(10));
+
+    let opt_entry=log_reader.next();
+    assert!(opt_entry.is_some());
+    let data_read=opt_entry.unwrap();
+    assert_eq!(*data_read.data(),create_vector_data_for_test_01(15));
+
+    let opt_entry=log_reader.next();
+    assert!(opt_entry.is_some());
+    let data_read=opt_entry.unwrap();
+    assert_eq!(*data_read.data(),create_vector_data_for_test_02(20));
+
+    let opt_entry=log_reader.next();
+    assert!(opt_entry.is_some());
+    let data_read=opt_entry.unwrap();
+    assert_eq!(*data_read.data(),create_vector_data_for_test_03(25));
+
+    let opt_entry=log_reader.next();
+    assert!(opt_entry.is_some());
+    let data_read=opt_entry.unwrap();
+    assert_eq!(*data_read.data(),create_vector_data_for_test_03(30));
+
 
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_none());
