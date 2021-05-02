@@ -132,33 +132,17 @@ impl WriteAheadLog {
             if self.current_block.len()+(HEADER_SIZE as usize)+entry.data.len()<= (BLOCK_SIZE as usize) {
                 println!("writing record<block_size");
                 self.append_record(FULL, entry.term, entry.index,  entry.data)?;
-                if self.current_block.len()== (BLOCK_SIZE as usize) {
-                    self.writer.write_all(&self.current_block)?;
-                    self.current_block.clear();
-                    self.blocks_written+=1;
-                }
             } else {
                 let available_buffer_len=(BLOCK_SIZE as usize)-self.current_block.len()-(HEADER_SIZE as usize);
                 let entry_part=entry.data.drain(0..available_buffer_len).collect();
                 self.append_record(FIRST, entry.term, entry.index,entry_part)?;
-                self.writer.write_all(&self.current_block)?;
-                self.current_block.clear();
-                self.blocks_written+=1;
                 while entry.data.len()+(HEADER_SIZE as usize)>(BLOCK_SIZE as usize) {
                     let available_buffer_len=(BLOCK_SIZE as usize)-self.current_block.len()-(HEADER_SIZE as usize);
                     let entry_part=entry.data.drain(0..available_buffer_len).collect();
                     self.append_record(MIDDLE, entry.term, entry.index,entry_part)?;
-                    self.writer.write_all(&self.current_block)?;
-                    self.current_block.clear();
-                    self.blocks_written+=1;
                 }
                 if entry.data.len()>0 {
                     self.append_record(LAST, entry.term, entry.index, entry.data)?;
-                    if self.current_block.len() == (BLOCK_SIZE as usize) {
-                        self.writer.write_all(&self.current_block)?;
-                        self.current_block.clear();
-                        self.blocks_written += 1;
-                    }
                 }
             }
         } else {
@@ -178,6 +162,11 @@ impl WriteAheadLog {
         self.current_block.append(&mut Vec::from(index.to_le_bytes()));
         self.current_block.append(&mut entry);
         println!("wrote crc={},size={},entry_type={},index={}",crc,size, entry_type,index);
+        if self.current_block.len()== (BLOCK_SIZE as usize) {
+            self.writer.write_all(&self.current_block)?;
+            self.current_block.clear();
+            self.blocks_written+=1;
+        }
         Ok(())
     }
 
@@ -225,9 +214,7 @@ impl WriteAheadLog {
             let non_padded_len=self.current_block.len();
             if self.current_block.len()< BLOCK_SIZE as usize {
                 padded_with_zero=true;
-                while self.current_block.len() < BLOCK_SIZE as usize {
-                    self.current_block.push(0);
-                }
+                self.current_block.resize(BLOCK_SIZE as usize, 0);
             }
             self.writer.write_all(&self.current_block)?;
             if padded_with_zero {
