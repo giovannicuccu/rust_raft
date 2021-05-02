@@ -7,7 +7,11 @@ se una entry va su più blocchi questi sono consecutivi
 ogni record ha un checksum per capire se è valido o meno
  */
 
-
+/*
+TODO: aggiungere versione u16 e dimensione del blocco u16 all'inizio del file
+TODO: aggiungere la modalità che consente di scegleire fra max_security, max_performance e se ci sta balanced che ogni tot entry o tot secondi fa la sync
+TODO: test con criterion
+*/
 use std::io::{BufReader, Read, BufWriter, Write, Seek, SeekFrom, Error, ErrorKind};
 use std::fs::{File, OpenOptions, metadata};
 use std::path::{PathBuf, Path};
