@@ -414,7 +414,6 @@ fn test_create_and_flush_and_reopen_block_boundary() {
 
     let file_metadata = metadata(&wal.path());
     assert_eq!(file_metadata.unwrap().len(),(WriteAheadLog::block_size()as usize*2) as u64);
-    let file = OpenOptions::new().read(true).open(&wal.path()).unwrap();
     let mut log_reader=wal.record_entry_iterator().unwrap();
 
     let opt_entry=log_reader.next();
@@ -489,8 +488,7 @@ fn test_create_and_read_without_flush() {
     //wal.flush().unwrap();
 
     let file_metadata = metadata(&wal.path());
-    assert_eq!(file_metadata.unwrap().len(),(WriteAheadLog::block_size()as usize) as u64);
-    let file = OpenOptions::new().read(true).open(&wal.path()).unwrap();
+    assert_eq!(file_metadata.unwrap().len(),0);
     let mut log_reader=wal.record_entry_iterator().unwrap();
 
     let opt_entry=log_reader.next();
@@ -498,6 +496,162 @@ fn test_create_and_read_without_flush() {
     let data_read=opt_entry.unwrap();
     let data: Vec<u8>=create_vector_data_for_test(10);
     assert_eq!(*data_read.data(),data);
+
+    let opt_entry=log_reader.next();
+    assert!(opt_entry.is_some());
+    let data_read=opt_entry.unwrap();
+    let data: Vec<u8>=create_vector_data_for_test_01(15);
+    assert_eq!(*data_read.data(),data);
+
+    let opt_entry=log_reader.next();
+    assert!(opt_entry.is_some());
+    let data_read=opt_entry.unwrap();
+    let data: Vec<u8>=create_vector_data_for_test_01(20);
+    assert_eq!(*data_read.data(),data);
+
+    let opt_entry=log_reader.next();
+    assert!(opt_entry.is_none());
+}
+
+#[test]
+fn test_create_and_read_without_flush_multiple_blocks() {
+    let dir = create_test_dir();
+
+    let mut wal = WriteAheadLog::new(dir.as_str()).unwrap();
+
+    let data1: Vec<u8> = create_vector_data_for_test(WriteAheadLog::block_size() as u32);
+    wal.append_entry(WriteAheadLogEntry::new(1, 1, data1)).unwrap();
+    wal.flush();
+    let data2: Vec<u8> = create_vector_data_for_test_01(15);
+    wal.append_entry(WriteAheadLogEntry::new(1, 2, data2)).unwrap();
+    let data2: Vec<u8> = create_vector_data_for_test_01(20);
+    wal.append_entry(WriteAheadLogEntry::new(1, 3, data2)).unwrap();
+
+
+    //wal.flush().unwrap();
+
+    let file_metadata = metadata(&wal.path());
+    assert_eq!(file_metadata.unwrap().len(),(WriteAheadLog::block_size()as usize*2) as u64);
+    let mut log_reader=wal.record_entry_iterator().unwrap();
+
+    let opt_entry=log_reader.next();
+    assert!(opt_entry.is_some());
+    let data_read=opt_entry.unwrap();
+    let data: Vec<u8>=create_vector_data_for_test(WriteAheadLog::block_size() as u32);
+    assert_eq!(*data_read.data(),data);
+
+    let opt_entry=log_reader.next();
+    assert!(opt_entry.is_some());
+    let data_read=opt_entry.unwrap();
+    let data: Vec<u8>=create_vector_data_for_test_01(15);
+    assert_eq!(*data_read.data(),data);
+
+    let opt_entry=log_reader.next();
+    assert!(opt_entry.is_some());
+    let data_read=opt_entry.unwrap();
+    let data: Vec<u8>=create_vector_data_for_test_01(20);
+    assert_eq!(*data_read.data(),data);
+
+    let opt_entry=log_reader.next();
+    assert!(opt_entry.is_none());
+}
+
+#[test]
+fn test_create_and_seek_without_flush() {
+    let dir = create_test_dir();
+
+    let mut wal = WriteAheadLog::new(dir.as_str()).unwrap();
+
+    let data1: Vec<u8> = create_vector_data_for_test(10);
+    wal.append_entry(WriteAheadLogEntry::new(1, 1, data1)).unwrap();
+    let data2: Vec<u8> = create_vector_data_for_test_01(15);
+    wal.append_entry(WriteAheadLogEntry::new(1, 2, data2)).unwrap();
+    let data2: Vec<u8> = create_vector_data_for_test_01(20);
+    wal.append_entry(WriteAheadLogEntry::new(1, 3, data2)).unwrap();
+
+
+    //wal.flush().unwrap();
+
+    let file_metadata = metadata(&wal.path());
+    assert_eq!(file_metadata.unwrap().len(),0);
+    let mut log_reader=wal.record_entry_iterator().unwrap();
+    log_reader.seek(1,2);
+    let opt_entry=log_reader.next();
+
+    assert!(opt_entry.is_some());
+    let data_read=opt_entry.unwrap();
+    let data: Vec<u8>=create_vector_data_for_test_01(20);
+    assert_eq!(*data_read.data(),data);
+
+    let opt_entry=log_reader.next();
+    assert!(opt_entry.is_none());
+}
+
+#[test]
+fn test_create_and_seek_without_flush_multiple_blocks() {
+    let dir = create_test_dir();
+
+    let mut wal = WriteAheadLog::new(dir.as_str()).unwrap();
+
+    let data1: Vec<u8> = create_vector_data_for_test(WriteAheadLog::block_size() as u32);
+    wal.append_entry(WriteAheadLogEntry::new(1, 1, data1)).unwrap();
+    wal.flush();
+    let data2: Vec<u8> = create_vector_data_for_test_01(15);
+    wal.append_entry(WriteAheadLogEntry::new(1, 2, data2)).unwrap();
+    let data2: Vec<u8> = create_vector_data_for_test_01(20);
+    wal.append_entry(WriteAheadLogEntry::new(1, 3, data2)).unwrap();
+
+
+    //wal.flush().unwrap();
+
+    let file_metadata = metadata(&wal.path());
+    assert_eq!(file_metadata.unwrap().len(),(WriteAheadLog::block_size()as usize*2) as u64);
+    let mut log_reader=wal.record_entry_iterator().unwrap();
+    log_reader.seek(1,1);
+
+
+    let opt_entry=log_reader.next();
+    assert!(opt_entry.is_some());
+    let data_read=opt_entry.unwrap();
+    let data: Vec<u8>=create_vector_data_for_test_01(15);
+    assert_eq!(*data_read.data(),data);
+
+    let opt_entry=log_reader.next();
+    assert!(opt_entry.is_some());
+    let data_read=opt_entry.unwrap();
+    let data: Vec<u8>=create_vector_data_for_test_01(20);
+    assert_eq!(*data_read.data(),data);
+
+    let opt_entry=log_reader.next();
+    assert!(opt_entry.is_none());
+}
+
+#[test]
+fn test_create_and_seek_without_flush_multiple_blocks_01() {
+    let dir = create_test_dir();
+
+    let mut wal = WriteAheadLog::new(dir.as_str()).unwrap();
+
+    wal.append_entry(WriteAheadLogEntry::new(1, 1, create_vector_data_for_test(WriteAheadLog::block_size() as u32))).unwrap();
+    wal.append_entry(WriteAheadLogEntry::new(1, 2, create_vector_data_for_test(WriteAheadLog::block_size() as u32))).unwrap();
+    wal.flush();
+    let data2: Vec<u8> = create_vector_data_for_test_01(15);
+    wal.append_entry(WriteAheadLogEntry::new(1, 3, data2)).unwrap();
+    let data2: Vec<u8> = create_vector_data_for_test_01(20);
+    wal.append_entry(WriteAheadLogEntry::new(1, 4, data2)).unwrap();
+
+
+    //wal.flush().unwrap();
+
+    let file_metadata = metadata(&wal.path());
+    assert_eq!(file_metadata.unwrap().len(),(WriteAheadLog::block_size()as usize*3) as u64);
+    let mut log_reader=wal.record_entry_iterator().unwrap();
+    log_reader.seek(1,1);
+
+    let opt_entry=log_reader.next();
+    assert!(opt_entry.is_some());
+    let data_read=opt_entry.unwrap();
+    assert_eq!(*data_read.data(),create_vector_data_for_test(WriteAheadLog::block_size() as u32));
 
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_some());
