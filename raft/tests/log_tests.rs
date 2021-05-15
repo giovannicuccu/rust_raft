@@ -55,7 +55,7 @@ fn test_read_and_write_single_block(input_data_len: u32, expected_wal_blocks: u1
     let file_metadata = metadata(&wal.path());
 
     let expected_wal_size = WriteAheadLog::block_size() as u64 * expected_wal_blocks as u64;
-    assert_eq!(file_metadata.unwrap().len(), expected_wal_size as u64);
+    assert_eq!(file_metadata.unwrap().len(), expected_wal_size as u64+1);
 
     let file = OpenOptions::new().read(true).open(&wal.path()).unwrap();
     let reader = BufReader::new(file);
@@ -94,7 +94,7 @@ fn test_write_and_read_two_record() {
     Non funziona
      */
     let file_metadata = metadata(&wal.path());
-    assert_eq!(file_metadata.unwrap().len() as u16,WriteAheadLog::block_size());
+    assert_eq!(file_metadata.unwrap().len() as u16,WriteAheadLog::block_size()+1);
     let file = OpenOptions::new().read(true).open(&wal.path()).unwrap();
     let mut log_reader=wal.record_entry_iterator().unwrap();
     let opt_entry=log_reader.next();
@@ -133,7 +133,7 @@ fn test_write_and_read_four_record() {
     Non funziona
      */
     let file_metadata = metadata(&wal.path());
-    assert_eq!(file_metadata.unwrap().len() as u16,WriteAheadLog::block_size());
+    assert_eq!(file_metadata.unwrap().len() as u16,WriteAheadLog::block_size()+1);
     let file = OpenOptions::new().read(true).open(&wal.path()).unwrap();
     let reader = BufReader::new(file);
     let mut log_reader=wal.record_entry_iterator().unwrap();
@@ -199,7 +199,7 @@ fn test_write_and_read_two_records_with_only_header_part() {
     wal.flush().unwrap();
 
     let file_metadata = metadata(&wal.path());
-    assert_eq!(file_metadata.unwrap().len(),(WriteAheadLog::block_size()as usize*2 as usize) as u64);
+    assert_eq!(file_metadata.unwrap().len(),(WriteAheadLog::block_size()as usize*2 as usize) as u64+1);
     let file = OpenOptions::new().read(true).open(&wal.path()).unwrap();
     let mut log_reader=wal.record_entry_iterator().unwrap();
     let opt_entry=log_reader.next();
@@ -243,7 +243,7 @@ fn test_create_and_reset_log() {
     wal.flush().unwrap();
 
     let file_metadata = metadata(&wal.path());
-    assert_eq!(file_metadata.unwrap().len(),(WriteAheadLog::block_size()as usize) as u64);
+    assert_eq!(file_metadata.unwrap().len(),(WriteAheadLog::block_size()as usize) as u64+1);
     let file = OpenOptions::new().read(true).open(&wal.path()).unwrap();
     let mut log_reader=wal.record_entry_iterator().unwrap();
     let opt_entry=log_reader.next();
@@ -282,7 +282,7 @@ fn test_create_and_reset_log_01() {
     wal.flush().unwrap();
 
     let file_metadata = metadata(&wal.path());
-    assert_eq!(file_metadata.unwrap().len(),(WriteAheadLog::block_size()as usize) as u64);
+    assert_eq!(file_metadata.unwrap().len(),(WriteAheadLog::block_size()as usize) as u64+1);
     let file = OpenOptions::new().read(true).open(&wal.path()).unwrap();
     let mut log_reader=wal.record_entry_iterator().unwrap();
 
@@ -320,7 +320,7 @@ fn test_create_and_flush_and_reopen() {
     wal.flush().unwrap();
 
     let file_metadata = metadata(&wal.path());
-    assert_eq!(file_metadata.unwrap().len(),(WriteAheadLog::block_size()as usize) as u64);
+    assert_eq!(file_metadata.unwrap().len(),(WriteAheadLog::block_size()as usize) as u64+1);
     let file = OpenOptions::new().read(true).open(&wal.path()).unwrap();
     let mut log_reader=wal.record_entry_iterator().unwrap();
 
@@ -364,7 +364,7 @@ fn test_create_and_flush_multiple_times() {
     wal.flush().unwrap();
 
     let file_metadata = metadata(&wal.path());
-    assert_eq!(file_metadata.unwrap().len(),(WriteAheadLog::block_size()as usize) as u64);
+    assert_eq!(file_metadata.unwrap().len(),(WriteAheadLog::block_size()as usize) as u64+1);
     let file = OpenOptions::new().read(true).open(&wal.path()).unwrap();
     let mut log_reader=wal.record_entry_iterator().unwrap();
 
@@ -413,7 +413,7 @@ fn test_create_and_flush_and_reopen_block_boundary() {
     wal.flush().unwrap();
 
     let file_metadata = metadata(&wal.path());
-    assert_eq!(file_metadata.unwrap().len(),(WriteAheadLog::block_size()as usize*2) as u64);
+    assert_eq!(file_metadata.unwrap().len(),(WriteAheadLog::block_size()as usize*2) as u64+1);
     let mut log_reader=wal.record_entry_iterator().unwrap();
 
     let opt_entry=log_reader.next();
@@ -448,7 +448,7 @@ fn test_create_and_flush_and_reopen_block_boundary_2_blocks() {
     wal.flush().unwrap();
 
     let file_metadata = metadata(&wal.path());
-    assert_eq!(file_metadata.unwrap().len(),(WriteAheadLog::block_size()as usize*3) as u64);
+    assert_eq!(file_metadata.unwrap().len(),(WriteAheadLog::block_size()as usize*3) as u64+1);
     let file = OpenOptions::new().read(true).open(&wal.path()).unwrap();
     let mut log_reader=wal.record_entry_iterator().unwrap();
 
@@ -488,7 +488,7 @@ fn test_create_and_read_without_flush() {
     //wal.flush().unwrap();
 
     let file_metadata = metadata(&wal.path());
-    assert_eq!(file_metadata.unwrap().len(),0);
+    assert_eq!(file_metadata.unwrap().len(),1);
     let mut log_reader=wal.record_entry_iterator().unwrap();
 
     let opt_entry=log_reader.next();
@@ -531,7 +531,7 @@ fn test_create_and_read_without_flush_multiple_blocks() {
     //wal.flush().unwrap();
 
     let file_metadata = metadata(&wal.path());
-    assert_eq!(file_metadata.unwrap().len(),(WriteAheadLog::block_size()as usize*2) as u64);
+    assert_eq!(file_metadata.unwrap().len(),(WriteAheadLog::block_size()as usize*2) as u64+1);
     let mut log_reader=wal.record_entry_iterator().unwrap();
 
     let opt_entry=log_reader.next();
@@ -573,7 +573,7 @@ fn test_create_and_seek_without_flush() {
     //wal.flush().unwrap();
 
     let file_metadata = metadata(&wal.path());
-    assert_eq!(file_metadata.unwrap().len(),0);
+    assert_eq!(file_metadata.unwrap().len(),1);
     let mut log_reader=wal.record_entry_iterator().unwrap();
     log_reader.seek(1,2);
     let opt_entry=log_reader.next();
@@ -605,7 +605,7 @@ fn test_create_and_seek_without_flush_multiple_blocks() {
     //wal.flush().unwrap();
 
     let file_metadata = metadata(&wal.path());
-    assert_eq!(file_metadata.unwrap().len(),(WriteAheadLog::block_size()as usize*2) as u64);
+    assert_eq!(file_metadata.unwrap().len(),(WriteAheadLog::block_size()as usize*2) as u64+1);
     let mut log_reader=wal.record_entry_iterator().unwrap();
     log_reader.seek(1,1);
 
@@ -644,7 +644,7 @@ fn test_create_and_seek_without_flush_multiple_blocks_01() {
     //wal.flush().unwrap();
 
     let file_metadata = metadata(&wal.path());
-    assert_eq!(file_metadata.unwrap().len(),(WriteAheadLog::block_size()as usize*3) as u64);
+    assert_eq!(file_metadata.unwrap().len(),(WriteAheadLog::block_size()as usize*3) as u64+1);
     let mut log_reader=wal.record_entry_iterator().unwrap();
     log_reader.seek(1,1);
 

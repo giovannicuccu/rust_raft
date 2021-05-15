@@ -8,7 +8,6 @@ ogni record ha un checksum per capire se è valido o meno
  */
 
 /*
-TODO: aggiungere versione u16
 TODO: aggiungere la modalità che consente di scegliere fra max_security, max_performance e se ci sta balanced che ogni tot entry o tot secondi fa la sync
 TODO: test con criterion
 */
@@ -31,6 +30,9 @@ const MIDDLE: u8 = 3;
 const LAST: u8 = 4;
 
 const CASTAGNOLI: Crc<u32> = Crc::<u32>::new(&CRC_32_ISCSI);
+
+
+const FORMAT_VERSION: u8 = 1;
 
 struct RecordEntry {
     crc: u32,
@@ -82,9 +84,12 @@ impl WriteAheadLog {
             .as_micros();
 
         let path = Path::new(dir).join(timestamp.to_string() + ".wal");
-        let file = OpenOptions::new().append(true).create(true).open(&path)?;
+        let mut file = OpenOptions::new().append(true).create(true).open(&path)?;
         //let file = BufWriter::new(file);
-
+        //come posso fare per usare direttamente  FORMAT_VERSION?
+        let version_buffer=[FORMAT_VERSION; 1];
+        file.write_all(&version_buffer);
+        file.flush();
         Ok(WriteAheadLog { path, writer: file, blocks_written: 0, current_block: vec![]})
     }
 
@@ -100,10 +105,19 @@ impl WriteAheadLog {
 
 
         let mut file = OpenOptions::new().read(true).write(true).open(PathBuf::from(path))?;
+        let mut version_buffer = [0; 1];
+        file.read_exact(&mut version_buffer)?;
+        let version_format=u8::from_le_bytes(version_buffer);
+        if version_format!=FORMAT_VERSION {
+            return Err(Error::new(ErrorKind::Other, "Wrong file version format: not 1"));
+        }
         let mut current_block = vec![];
-        let mut seek_position = ((blocks_read) * BLOCK_SIZE as u32) as u64;
+        //aggiungo 1 perchè il primo byte è la versione
+        let mut seek_position = ((blocks_read) * BLOCK_SIZE as u32) as u64+1;
         if offset_in_block!= BLOCK_SIZE as usize {
-            seek_position = ((blocks_read-1) * BLOCK_SIZE as u32) as u64;
+            //aggiungo 1 perchè il primo byte è la versione
+            seek_position = ((blocks_read-1) * BLOCK_SIZE as u32) as u64+1;
+
             file.seek(SeekFrom::Start(seek_position));
             let mut new_buffer = [0; BLOCK_SIZE as usize];
             {
@@ -169,6 +183,7 @@ impl WriteAheadLog {
         if self.current_block.len()== (BLOCK_SIZE as usize) {
             self.writer.write_all(&self.current_block)?;
             self.current_block.clear();
+            self.flush();
             self.blocks_written+=1;
         }
         Ok(())
@@ -197,7 +212,7 @@ impl WriteAheadLog {
         }
         let blocks_read=log_reader.blocks_read;
         let offset_in_block=(BLOCK_SIZE - log_reader.current_buffer_len() as u16) as usize;
-        let new_file_size=((blocks_read-1) * BLOCK_SIZE as u32) as u64;
+        let new_file_size=((blocks_read-1) * BLOCK_SIZE as u32) as u64+1;
         file.seek(SeekFrom::Start(new_file_size));
 
         self.current_block.clear();
@@ -224,7 +239,7 @@ impl WriteAheadLog {
             self.writer.write_all(&self.current_block)?;
             if padded_with_zero {
                 let mut file = OpenOptions::new().read(true).write(true).open(&self.path)?;
-                let seek_position = ((self.blocks_written) * BLOCK_SIZE as u32) as u64;
+                let seek_position = ((self.blocks_written) * BLOCK_SIZE as u32) as u64+1;
                 file.seek(SeekFrom::Start(seek_position));
                 self.writer = file;
                 self.current_block.truncate(non_padded_len);
@@ -252,7 +267,7 @@ impl WriteAheadLog {
 
 
 pub struct RecordEntryIterator {
-    reader: BufReader<File>,
+    reader: File,
     current_buffer: Vec<u8>,
     blocks_to_read: u32,
     blocks_read: u32,
@@ -263,21 +278,28 @@ pub struct RecordEntryIterator {
 impl RecordEntryIterator {
 
     fn new(path: PathBuf, in_memory_fragment: Vec<u8>) -> io::Result<Self> {
-        let file = OpenOptions::new().read(true).open(path.clone())?;
-        let reader = BufReader::new(file);
-        let file_metadata = metadata(path);
+        let mut file = OpenOptions::new().read(true).open(path.clone())?;
+        let mut version_buffer = [0; 1];
+        file.read_exact(&mut version_buffer)?;
+        let version_format=u8::from_le_bytes(version_buffer);
+        if version_format!=FORMAT_VERSION {
+            return Err(Error::new(ErrorKind::Other, "Wrong file version format: not 1"));
+        }
+        let file_metadata = metadata(path.clone());
         let blocks_to_read= (file_metadata.unwrap().len()/BLOCK_SIZE as u64) as u32;
         println!("blocks to read {}", blocks_to_read);
-        Ok(RecordEntryIterator { reader, current_buffer:vec![], blocks_to_read , blocks_read: 0,in_memory_fragment,reading_in_memory:false  })
+        let file_metadata = metadata(path);
+        println!("file_size {}", file_metadata.unwrap().len());
+        Ok(RecordEntryIterator { reader: file, current_buffer:vec![], blocks_to_read , blocks_read: 0,in_memory_fragment,reading_in_memory:false  })
     }
 }
 
 fn read_from_vec(vec: &mut Vec<u8>)-> Option<RecordEntry> {
 
     if vec.len() >= HEADER_SIZE as usize {
-        let slice = &vec[0..15];
+        let slice = &vec[0..HEADER_SIZE as usize];
         let mut contains_entry = false;
-        for i in 0..15 {
+        for i in 0..HEADER_SIZE as usize {
             if slice[i] != 0 {
                 contains_entry = true;
                 break;
@@ -317,10 +339,10 @@ impl RecordEntryIterator {
     pub fn seek(&mut self, term: TermType, index: IndexType) -> io::Result<()>{
         if self.in_memory_fragment.len()>=HEADER_SIZE as usize {
             let mut pos_in_buffer=0;
-            while pos_in_buffer+15<self.in_memory_fragment.len() {
-                let slice = &self.in_memory_fragment[0..15];
+            while pos_in_buffer+(HEADER_SIZE as usize)<self.in_memory_fragment.len() {
+                let slice = &self.in_memory_fragment[0..HEADER_SIZE as usize];
                 let mut contains_entry = false;
-                for i in 0..15 {
+                for i in 0..HEADER_SIZE as usize {
                     if slice[i] != 0 {
                         contains_entry = true;
                         break;
@@ -332,10 +354,13 @@ impl RecordEntryIterator {
                 let actual_term = u32::from_le_bytes(self.in_memory_fragment[pos_in_buffer + 7..pos_in_buffer +11].try_into().unwrap());
                 let actual_index = u32::from_le_bytes(self.in_memory_fragment[pos_in_buffer + 11..pos_in_buffer +15].try_into().unwrap());
                 let size = u16::from_le_bytes(self.in_memory_fragment[pos_in_buffer + 4..pos_in_buffer +6].try_into().unwrap());
+                let entry_type = u8::from_le_bytes(self.in_memory_fragment[pos_in_buffer + 6..pos_in_buffer +7].try_into().unwrap());
                 if term >= actual_term {
                     if actual_index < index {
                         pos_in_buffer+=(HEADER_SIZE as u16 +size) as usize;
-                    } else if actual_index==index {
+
+                    } else if actual_index==index && (entry_type==FULL || entry_type==LAST) {
+                        //controllo su entry type ridondante presente solo per scruopolo
                         self.in_memory_fragment.drain(0..pos_in_buffer+HEADER_SIZE as usize +size as usize);
                         self.reading_in_memory=true;
                         return Ok(());
