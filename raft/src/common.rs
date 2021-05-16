@@ -84,6 +84,17 @@ impl StateMachineCommand {
 
 }
 
+#[derive(PartialEq, PartialOrd,Clone)]
+pub enum StateMachineCommand2 {
+    Put {
+        key:String,
+        value:String,
+    },
+    Delete {
+        key:String,
+    }
+}
+
 pub struct LogEntry {
     index: IndexType,
     term: TermType,

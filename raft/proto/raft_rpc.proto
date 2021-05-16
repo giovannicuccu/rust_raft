@@ -29,7 +29,7 @@ message AppendEntriesRpcRequest {
         CommandType command_type=3;
         string key = 4;
         string value = 5;
-      }
+    }
     uint32 term = 1;
     uint32 leader_id = 2;
     uint32 prev_log_index = 3;
