@@ -1,5 +1,5 @@
 use rand::Rng;
-use std::fs::{create_dir, OpenOptions, metadata};
+use std::fs::{create_dir, OpenOptions, metadata, remove_dir_all};
 use std::io::BufReader;
 use raft::log::{WriteAheadLog, RecordEntryIterator, WriteAheadLogEntry};
 use std::{env, time, thread};
@@ -68,6 +68,7 @@ fn test_read_and_write_single_block(input_data_len: u32, expected_wal_blocks: u1
     println!("before getting none");
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_none());
+    remove_dir_all(dir);
 }
 
 
@@ -109,6 +110,7 @@ fn test_write_and_read_two_record() {
     assert_eq!(*data_read.data(),data);
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_none());
+    remove_dir_all(dir);
 }
 
 #[test]
@@ -159,6 +161,7 @@ fn test_write_and_read_four_record() {
     assert_eq!(*data_read.data(),data);
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_none());
+    remove_dir_all(dir);
 }
 
 #[test]
@@ -214,6 +217,7 @@ fn test_write_and_read_two_records_with_only_header_part() {
     assert_eq!(*data_read.data(),data);
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_none());
+    remove_dir_all(dir);
 }
 
 #[test]
@@ -223,6 +227,7 @@ fn test_write_0_size_entry() {
     let mut wal = WriteAheadLog::new(dir.as_str()).unwrap();
 
     assert!(wal.append_entry(WriteAheadLogEntry::new(1, 1, vec![])).err().is_some());
+    remove_dir_all(dir);
 }
 
 #[test]
@@ -246,6 +251,7 @@ fn test_no_write_and_reopen() {
     let data_read=opt_entry.unwrap();
     let data: Vec<u8>=create_vector_data_for_test((10 as usize) as u32);
     assert_eq!(*data_read.data(),data);
+    remove_dir_all(dir);
 }
 
 #[test]
@@ -289,6 +295,7 @@ fn test_create_and_reset_log() {
 
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_none());
+    remove_dir_all(dir);
 }
 
 #[test]
@@ -322,6 +329,7 @@ fn test_create_and_reset_log_01() {
 
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_none());
+    remove_dir_all(dir);
 }
 
 #[test]
@@ -364,6 +372,7 @@ fn test_create_and_flush_and_reopen() {
 
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_none());
+    remove_dir_all(dir);
 }
 
 #[test]
@@ -419,6 +428,7 @@ fn test_create_and_flush_multiple_times() {
 
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_none());
+    remove_dir_all(dir);
 }
 
 #[test]
@@ -452,6 +462,7 @@ fn test_create_and_flush_and_reopen_block_boundary() {
 
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_none());
+    remove_dir_all(dir);
 }
 
 
@@ -492,6 +503,7 @@ fn test_create_and_flush_and_reopen_block_boundary_2_blocks() {
 
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_none());
+    remove_dir_all(dir);
 }
 
 #[test]
@@ -534,6 +546,7 @@ fn test_create_and_read_without_flush() {
 
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_none());
+    remove_dir_all(dir);
 }
 
 #[test]
@@ -577,6 +590,7 @@ fn test_create_and_read_without_flush_multiple_blocks() {
 
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_none());
+    remove_dir_all(dir);
 }
 
 #[test]
@@ -608,6 +622,7 @@ fn test_create_and_seek_without_flush() {
 
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_none());
+    remove_dir_all(dir);
 }
 
 #[test]
@@ -647,6 +662,7 @@ fn test_create_and_seek_without_flush_multiple_blocks() {
 
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_none());
+    remove_dir_all(dir);
 }
 
 #[test]
@@ -690,4 +706,5 @@ fn test_create_and_seek_without_flush_multiple_blocks_01() {
 
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_none());
+    remove_dir_all(dir);
 }

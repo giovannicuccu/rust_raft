@@ -87,6 +87,7 @@ mod tests {
         let value=state_machine.get_value(String::from("akey"));
         assert!(value.is_some());
         assert_eq!(value.unwrap(),String::from("avalue"));
+        remove_dir_all(dir);
     }
 
     #[test]
@@ -103,6 +104,7 @@ mod tests {
         state_machine.apply_command(delete_command);
         let value=state_machine.get_value(String::from("akey"));
         assert!(value.is_none());
+        remove_dir_all(dir);
     }
 
     #[test]
@@ -117,6 +119,7 @@ mod tests {
         let value=state_machine.get_value(String::from("akey"));
         assert!(value.is_some());
         assert_eq!(value.unwrap(),String::from("avalue"));
+        remove_dir_all(dir);
     }
 
     #[test]
@@ -137,5 +140,6 @@ mod tests {
         state_machine.apply_command2(delete_command);
         let value=state_machine.get_value(String::from("akey"));
         assert!(value.is_none());
+        remove_dir_all(dir);
     }
 }
