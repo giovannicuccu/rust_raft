@@ -4,10 +4,12 @@ use raft::network::{ClientChannel, NetworkChannel};
 use raft::common::{AppendEntriesResponse, RequestVoteRequest, AppendEntriesRequest, RequestVoteResponse};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::{thread, time};
+use std::{thread, time, env};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::time::Sleep;
 use std::time::Duration;
+use rand::Rng;
+use std::fs::create_dir;
 
 
 struct ClientSender<SReq,SResp> {
@@ -295,11 +297,23 @@ impl NetworkChannel for RaftTestNetworkChannel {
 /*
 questo si può mettere anche dentro la impl di una struct
  */
-//#[test]
+
+
+
+fn create_test_dir() -> String {
+    let dir = env::temp_dir();
+    let mut rng = rand::thread_rng();
+    let dir = format!("{}{}",dir.display(), rng.gen::<u32>());
+    println!("dir={}",dir);
+    create_dir(&dir).unwrap();
+    dir
+}
+
+#[test]
 fn testThreeServers() {
-    let server_config_1=ServerConfig::new(1,65,100, 9090,vec![String::from("server2"),String::from("server3")]);
-    let server_config_2=ServerConfig::new(2,65,100, 9091,vec![String::from("server1"),String::from("server3")]);
-    let server_config_3=ServerConfig::new(3,65,100, 9092,vec![String::from("server1"),String::from("server2")]);
+    let server_config_1=ServerConfig::new(1,65,100, 9090,vec![String::from("server2"),String::from("server3")],create_test_dir());
+    let server_config_2=ServerConfig::new(2,65,100, 9091,vec![String::from("server1"),String::from("server3")],create_test_dir());
+    let server_config_3=ServerConfig::new(3,65,100, 9092,vec![String::from("server1"),String::from("server2")],create_test_dir());
 
     let mut children = vec![];
 
@@ -338,4 +352,32 @@ Se non raccolgo gli handle il programma finisce subito
     assert_eq!(server_state_list.iter().filter(|server_state| **server_state==RaftServerState::Follower).count(),2);
     assert_eq!(server_state_list.iter().filter(|server_state| **server_state==RaftServerState::Leader).count(),1);
     assert_eq!(server_state_list.iter().filter(|server_state| **server_state==RaftServerState::Candidate).count(),0);
+}
+
+#[test]
+fn test_start_one_server() {
+    let server_config_1=ServerConfig::new(1,65,100, 9090,vec![String::from("server2"),String::from("server3")],String::from("d:\\temp\\10"));
+
+    let mut children = vec![];
+
+    /*
+Se non raccolgo gli handle il programma finisce subito
+ */
+    let channel_factory=Arc::new(RaftTestNetworkChannelFactory::new(vec![String::from("server1"),String::from("server2"),String::from("server3")]));
+    println!("before starting servers");
+    let server1=Arc::new(RaftTestServerImpl::new(String::from("server1"),server_config_1,channel_factory.clone()));
+    let server1_thread=server1.clone();
+    children.push(thread::spawn(move || {
+        println!("inside starting server 1");
+        server1_thread.start();
+    }));
+
+
+    let sleep_time = time::Duration::from_millis(3000);
+    thread::sleep(sleep_time);
+    server1.stop();
+    for child in children {
+        // Wait for the thread to finish. Returns a result.
+        let _ = child.join();
+    }
 }

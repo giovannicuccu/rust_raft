@@ -133,11 +133,14 @@ impl WriteAheadLog {
 
         let mut file = OpenOptions::new().read(true).write(true).open(PathBuf::from(path))?;
         file.seek(SeekFrom::Start(seek_position));
-        //let writer = BufWriter::new(file);
+        let mut blocks_written=0;
+        if blocks_read>0 {
+            blocks_written=blocks_read-1;
+        }
         Ok(WriteAheadLog {
             path: PathBuf::from(path),
             writer: file,
-            blocks_written: blocks_read-1,
+            blocks_written,
             current_block
         })
     }

@@ -6,9 +6,9 @@ mod grpc_channel;
 
 fn main() {
     println!("Hello, world!");
-    let server_config_1=ServerConfig::new(1,65,100, 9090,vec![String::from("http://localhost:9091"),String::from("http://localhost:9092")]);
-    let server_config_2=ServerConfig::new(2,65,100, 9091,vec![String::from("http://localhost:9090"),String::from("http://localhost:9092")]);
-    let server_config_3=ServerConfig::new(3,65,100, 9092,vec![String::from("http://localhost:9090"),String::from("http://localhost:9091")]);
+    let server_config_1=ServerConfig::new(1,65,100, 9090,vec![String::from("http://localhost:9091"),String::from("http://localhost:9092")],String::from("c:\\temp\\1"));
+    let server_config_2=ServerConfig::new(2,65,100, 9091,vec![String::from("http://localhost:9090"),String::from("http://localhost:9092")],String::from("c:\\temp\\2"));
+    let server_config_3=ServerConfig::new(3,65,100, 9092,vec![String::from("http://localhost:9090"),String::from("http://localhost:9091")],String::from("c:\\temp\\3"));
 
     let mut children = vec![];
 /*

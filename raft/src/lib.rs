@@ -8,11 +8,14 @@ use crate::network::*;
 use std::time::Instant;
 use rand::prelude::*;
 use std::{thread, time};
-use std::sync::{Mutex};
+use std::sync::{Mutex, Arc};
 use chrono::Utc;
 use rayon::prelude::IntoParallelRefIterator;
 use rayon::iter::ParallelIterator;
 use std::sync::atomic::{AtomicIsize, Ordering};
+use std::path::{PathBuf, Path};
+use crate::log::WriteAheadLog;
+use walkdir::WalkDir;
 
 
 const NO_INDEX : IndexType = 0;
@@ -50,17 +53,19 @@ pub struct ServerConfig {
     election_timeout_max: u32,
     server_port:u16,
     other_nodes_in_cluster: Vec<String>,
+    wal_dir:String,
 }
 
 impl ServerConfig {
     pub fn new(id: CandidateIdType,  election_timeout_min: u32, election_timeout_max: u32,
-               server_port:u16, other_nodes_in_cluster: Vec<String>) -> ServerConfig {
+               server_port:u16, other_nodes_in_cluster: Vec<String>,wal_dir:String) -> ServerConfig {
         ServerConfig {
             id,
             election_timeout_min,
             election_timeout_max,
             server_port,
-            other_nodes_in_cluster
+            other_nodes_in_cluster,
+            wal_dir
         }
     }
     pub fn id(&self)-> CandidateIdType {
@@ -103,9 +108,34 @@ pub struct RaftServer<C:ClientChannel> {
     server_state: Mutex<ServerState>,
     config: ServerConfig,
     clients_for_servers_in_cluster: Vec<C>,
+    wal: Arc<Mutex<WriteAheadLog>>,
     //server_channel: S,
 }
 
+
+//codice per trovare i file in una dir
+//devo cercare i .wal e avere il più recente
+//apro quello
+
+/*
+use walkdir::WalkDir;
+
+fn main() -> Result<()> {
+    for entry in WalkDir::new(".")
+            .follow_links(true)
+            .into_iter()
+            .filter_map(|e| e.ok()) {
+        let f_name = entry.file_name().to_string_lossy();
+        let sec = entry.metadata()?.modified()?;
+
+        if f_name.ends_with(".json") && sec.elapsed()?.as_secs() < 86400 {
+            println!("{}", f_name);
+        }
+    }
+
+    Ok(())
+}
+ */
 
 impl <C:ClientChannel+Send+Sync >RaftServer<C> {
 
@@ -115,6 +145,33 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
         Capire perchè dopo che ho messo clients_len si incammella con il tipo
          */
         let clients:Vec<C>=server_config.other_nodes_in_cluster.iter().map(|address|network_channel.client_channel(String::from(address))).collect();
+        let file_dir = server_config.wal_dir.as_str();
+        let mut last_modified=0;
+        let mut file_name:Option<String>=None;
+        println!("file_dir {}",file_dir);
+        for entry in WalkDir::new(file_dir)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(|e| e.ok()) {
+            if entry.path().is_file() {
+                let f_name = entry.file_name().to_string_lossy();
+                println!("found file {}", f_name.parse::<String>().unwrap());
+                let sec = entry.metadata().unwrap().modified().unwrap();
+                if last_modified == 0 {
+                    last_modified = sec.elapsed().unwrap().as_secs() + 1;
+                    println!("last_modified {}", last_modified);
+                }
+                if f_name.ends_with(".wal") && sec.elapsed().unwrap().as_secs() < last_modified {
+                    file_name = Some(Path::new(file_dir).join(f_name.parse::<String>().unwrap()).to_string_lossy().parse::<String>().unwrap());
+                    println!("found wal {}", f_name.parse::<String>().unwrap());
+                }
+            }
+        }
+        let wal=match file_name {
+            None => {println!("found wal dir {}",file_dir); WriteAheadLog::new(file_dir).unwrap()},
+            Some(file_name) => {println!("found wal file {}",file_name);WriteAheadLog::from_path(&*file_name).unwrap()},
+        };
+        let wal_mutex=Arc::new(Mutex::new(wal));
         RaftServer {
             persistent_state: ServerPersistentState {
                 current_term:NO_TERM,
@@ -134,6 +191,7 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
              */
 
             clients_for_servers_in_cluster: clients,
+            wal: wal_mutex,
         }
 
     }

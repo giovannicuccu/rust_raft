@@ -2,7 +2,7 @@ use rand::Rng;
 use std::fs::{create_dir, OpenOptions, metadata};
 use std::io::BufReader;
 use raft::log::{WriteAheadLog, RecordEntryIterator, WriteAheadLogEntry};
-use std::{env};
+use std::{env, time, thread};
 use std::path::PathBuf;
 
 
@@ -223,6 +223,29 @@ fn test_write_0_size_entry() {
     let mut wal = WriteAheadLog::new(dir.as_str()).unwrap();
 
     assert!(wal.append_entry(WriteAheadLogEntry::new(1, 1, vec![])).err().is_some());
+}
+
+#[test]
+fn test_no_write_and_reopen() {
+    let dir = create_test_dir();
+    let mut wal = WriteAheadLog::new(dir.as_str()).unwrap();
+    wal.flush();
+    let mut wal_path=wal.path().clone();
+    drop(wal);
+    let mut wal = WriteAheadLog::from_path(wal_path.to_str().unwrap()).unwrap();
+    let file_metadata = metadata(&wal.path());
+    assert_eq!(file_metadata.unwrap().len(),1);
+    wal.append_entry(WriteAheadLogEntry::new(1, 1, create_vector_data_for_test((10 as usize) as u32))).unwrap();
+    wal.flush();
+    let file_metadata = metadata(&wal.path());
+    assert_eq!(file_metadata.unwrap().len(),(WriteAheadLog::block_size()as usize) as u64+1);
+    let file = OpenOptions::new().read(true).open(&wal.path()).unwrap();
+    let mut log_reader=wal.record_entry_iterator().unwrap();
+    let opt_entry=log_reader.next();
+    assert!(opt_entry.is_some());
+    let data_read=opt_entry.unwrap();
+    let data: Vec<u8>=create_vector_data_for_test((10 as usize) as u32);
+    assert_eq!(*data_read.data(),data);
 }
 
 #[test]
