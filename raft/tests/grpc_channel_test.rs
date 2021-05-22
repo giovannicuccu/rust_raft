@@ -4,8 +4,9 @@ use raft_rpc::raft_rpc_server::{RaftRpc,RaftRpcServer};
 
 use raft_rpc::{RequestVoteRpcReply, RequestVoteRpcRequest,AppendEntriesRpcRequest,AppendEntriesRpcReply};
 use raft_rpc::append_entries_rpc_request::{LogEntryRpc};
+use raft_rpc::append_entries_rpc_request::log_entry_rpc::{Command, PutCommand,DeleteCommand};
 use raft::network::{ClientChannel, NetworkChannel};
-use raft::common::{RequestVoteRequest, RequestVoteResponse, CandidateIdType, AppendEntriesResponse, AppendEntriesRequest, CommandType, LogEntry, StateMachineCommand};
+use raft::common::{RequestVoteRequest, RequestVoteResponse, CandidateIdType, AppendEntriesResponse, AppendEntriesRequest, LogEntry, StateMachineCommand};
 use raft::{RaftServer, ServerConfig};
 use tokio::runtime::Runtime;
 use std::sync::{Arc, Mutex};
@@ -149,15 +150,14 @@ impl RaftRPCClientImplTest {
         let log_entries_rpc=append_entries_request.entries().iter().map(|entry| LogEntryRpc {
             index: entry.index(),
             term: entry.term(),
-            command_type: match entry.state_machine_command().command_type() {
-                CommandType::Put => {0}
-                CommandType::Delete => {1}
+            command: match entry.state_machine_command() {
+                StateMachineCommand::Put {key,value} => {
+                    Some(Command::Put(PutCommand {key:String::from(key), value: String::from(value)}))
+                }
+                StateMachineCommand::Delete {key} => {
+                    Some(Command::Delete(DeleteCommand {key:String::from(key)}))
+                }
             },
-            /*
-            TODO capire se si può evitare il clone e come fare con le stringhe
-             */
-            key: entry.state_machine_command().key().clone(),
-            value: entry.state_machine_command().value().clone(),
         }).collect();
         let request = tonic::Request::new(AppendEntriesRpcRequest {
             term: append_entries_request.term(),

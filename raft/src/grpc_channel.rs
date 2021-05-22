@@ -4,8 +4,9 @@ use raft_rpc::raft_rpc_server::{RaftRpc,RaftRpcServer};
 
 use raft_rpc::{RequestVoteRpcReply, RequestVoteRpcRequest,AppendEntriesRpcRequest,AppendEntriesRpcReply};
 use raft_rpc::append_entries_rpc_request::{LogEntryRpc};
+use raft_rpc::append_entries_rpc_request::log_entry_rpc::{Command, PutCommand,DeleteCommand};
 use raft::network::{ClientChannel, NetworkChannel};
-use raft::common::{RequestVoteRequest, RequestVoteResponse, CandidateIdType, AppendEntriesResponse, AppendEntriesRequest, CommandType, LogEntry, StateMachineCommand};
+use raft::common::{RequestVoteRequest, RequestVoteResponse, CandidateIdType, AppendEntriesResponse, AppendEntriesRequest, LogEntry, StateMachineCommand};
 use raft::{RaftServer, ServerConfig};
 use tokio::runtime::Runtime;
 use std::sync::{Arc, Mutex};
@@ -92,19 +93,24 @@ impl RaftRpc for RaftRPCServerImpl {
         println!("async fn append_entries_rpc at {}",Utc::now().timestamp_millis());
         let request_obj=request.into_inner();
         let log_entries_res:Vec<Result<LogEntry,i32>>=request_obj.entries.iter().map(|entry| {
-            let command_type_res=
-                match entry.command_type {
-                    0 => {Ok(CommandType::Put)}
-                    1 => {Ok(CommandType::Delete)}
-                    x @ _ => {Err(x)}
+
+          let command_res=      match &entry.command {
+              //capire meglio il giro di queste stringhe
+                    Some(command) => {
+                        match command {
+                            Command::Put(putCommand) => { Ok(StateMachineCommand::Put {key:String::from(&putCommand.key), value:String::from(&putCommand.value)}) }
+                            Command::Delete(deleteCommand) => { Ok(StateMachineCommand::Delete {key:String::from(&deleteCommand.key)}) }
+                        }
+                    }
+                    None => {Err(-1)}
                 };
-            match command_type_res {
-                Ok(command_type) => {
+            //Ok(StateMachineCommand::Delete {key:String::from("delete")})
+            match command_res {
+                Ok(command) => {
                     Ok(LogEntry::new(
                         entry.index, entry.term,
-                        StateMachineCommand::new(
-                            command_type, entry.key.clone(), entry.value.clone())
-                    ))
+                        command)
+                    )
                 }
                 Err(x)=> {
                     Err(x)
@@ -241,15 +247,14 @@ impl RaftRPCClientImpl {
         let log_entries_rpc=append_entries_request.entries().iter().map(|entry| LogEntryRpc {
             index: entry.index(),
             term: entry.term(),
-            command_type: match entry.state_machine_command().command_type() {
-                CommandType::Put => {0}
-                CommandType::Delete => {1}
+            command: match entry.state_machine_command() {
+                StateMachineCommand::Put {key,value} => {
+                    Some(Command::Put(PutCommand {key:String::from(key), value:String::from(value)}))
+                }
+                StateMachineCommand::Delete {key} => {
+                    Some(Command::Delete(DeleteCommand {key:String::from(key)}))
+                }
             },
-            /*
-            TODO capire se si può evitare il clone e come fare con le stringhe
-             */
-            key: entry.state_machine_command().key().clone(),
-            value: entry.state_machine_command().value().clone(),
         }).collect();
         let request = tonic::Request::new(AppendEntriesRpcRequest {
             term: append_entries_request.term(),

@@ -57,35 +57,9 @@ impl RequestVoteResponse {
     }
 }
 
-pub enum CommandType {
-    Put=1,
-    Delete=2,
-}
-
-pub struct StateMachineCommand {
-    command_type: CommandType,
-    key: String,
-    value: String,
-}
-
-impl StateMachineCommand {
-    pub fn new(command_type: CommandType, key: String, value: String) -> Self {
-        StateMachineCommand { command_type, key, value }
-    }
-    pub fn command_type(&self) -> &CommandType {
-        &self.command_type
-    }
-    pub fn key(&self) -> &String {
-        &self.key
-    }
-    pub fn value(&self) -> &String {
-        &self.value
-    }
-
-}
 
 #[derive(PartialEq, PartialOrd,Clone)]
-pub enum StateMachineCommand2 {
+pub enum StateMachineCommand {
     Put {
         key:String,
         value:String,
