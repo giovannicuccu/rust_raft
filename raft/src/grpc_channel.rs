@@ -2,9 +2,11 @@ use tonic::{transport::Server, Request, Response, Status, Code};
 use raft_rpc::raft_rpc_client::{RaftRpcClient};
 use raft_rpc::raft_rpc_server::{RaftRpc,RaftRpcServer};
 
-use raft_rpc::{RequestVoteRpcReply, RequestVoteRpcRequest,AppendEntriesRpcRequest,AppendEntriesRpcReply};
+use raft_rpc::{RequestVoteRpcReply, RequestVoteRpcRequest,AppendEntriesRpcRequest,AppendEntriesRpcReply,ApplyCommandRpcRequest,ApplyCommandRpcReply};
 use raft_rpc::append_entries_rpc_request::{LogEntryRpc};
-use raft_rpc::append_entries_rpc_request::log_entry_rpc::{Command, PutCommand,DeleteCommand};
+use raft_rpc::append_entries_rpc_request::log_entry_rpc::{Command};
+use raft_rpc::{PutCommand,DeleteCommand};
+use raft_rpc::apply_command_rpc_reply::{OkKo};
 use raft::network::{ClientChannel, NetworkChannel};
 use raft::common::{RequestVoteRequest, RequestVoteResponse, CandidateIdType, AppendEntriesResponse, AppendEntriesRequest, LogEntry, StateMachineCommand};
 use raft::{RaftServer, ServerConfig};
@@ -102,7 +104,10 @@ impl RaftRpc for RaftRPCServerImpl {
                             Command::Delete(deleteCommand) => { Ok(StateMachineCommand::Delete {key:String::from(&deleteCommand.key)}) }
                         }
                     }
-                    None => {Err(-1)}
+                    None => {
+                        println!("NONE in Command");
+                        Err(-1)
+                    }
                 };
             //Ok(StateMachineCommand::Delete {key:String::from("delete")})
             match command_res {
@@ -135,6 +140,16 @@ impl RaftRpc for RaftRPCServerImpl {
         let reply = raft_rpc::AppendEntriesRpcReply {
             term: response.term(),
             success: response.success(),
+        };
+        Ok(Response::new(reply))
+    }
+
+    async fn apply_command_rpc(
+        &self,
+        request: Request<ApplyCommandRpcRequest>,
+    ) -> Result<Response<ApplyCommandRpcReply>, Status> {
+        let reply = raft_rpc::ApplyCommandRpcReply {
+            status: Some(raft_rpc::apply_command_rpc_reply::Status::Okko(0))
         };
         Ok(Response::new(reply))
     }

@@ -147,3 +147,22 @@ impl AppendEntriesResponse {
         self.success
     }
 }
+
+pub struct ApplyCommandRequest {
+    command: StateMachineCommand,
+}
+
+pub enum ApplyCommandStatus {
+    Ok,
+    Ko,
+    Pending {
+        token: u64
+    },
+    Redirect {
+        leader: String
+    }
+}
+
+pub struct ApplyCommandResponse {
+    status: ApplyCommandStatus,
+}

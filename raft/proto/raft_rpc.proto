@@ -4,6 +4,7 @@ package raft_rpc;
 service RaftRPC {
     rpc RequestVoteRPC (RequestVoteRpcRequest) returns (RequestVoteRpcReply);
     rpc AppendEntriesRPC (AppendEntriesRpcRequest) returns (AppendEntriesRpcReply);
+    rpc ApplyCommandRPC (ApplyCommandRpcRequest) returns (ApplyCommandRpcReply);
 }
 
 message RequestVoteRpcRequest {
@@ -18,15 +19,16 @@ message RequestVoteRpcReply {
     bool vote_granted = 2;
 }
 
+message PutCommand {
+    string key = 1;
+    string value = 2;
+}
+message DeleteCommand {
+    string key = 1;
+}
+
 message AppendEntriesRpcRequest {
     message LogEntryRpc {
-        message PutCommand {
-            string key = 1;
-            string value = 2;
-        }
-        message DeleteCommand {
-            string key = 1;
-        }
         uint32 index = 1;
         uint32 term = 2;
         oneof command {
@@ -45,4 +47,29 @@ message AppendEntriesRpcRequest {
 message AppendEntriesRpcReply {
     uint32 term = 1;
     bool success = 2;
+}
+
+message ApplyCommandRpcRequest {
+        oneof command {
+            PutCommand put = 3;
+            DeleteCommand delete=4;
+        }
+}
+
+message ApplyCommandRpcReply {
+    message PendingStatus {
+        uint64 token = 1;
+    }
+    message RedirectStatus {
+        string leader = 1;
+    }
+    enum OkKo {
+            OK = 0;
+            KO = 1;
+    }
+    oneof status {
+        OkKo okko= 1;
+        PendingStatus pending=2;
+        RedirectStatus redirect=3;
+    }
 }
