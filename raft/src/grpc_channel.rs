@@ -8,7 +8,7 @@ use raft_rpc::append_entries_rpc_request::log_entry_rpc::{Command};
 use raft_rpc::{PutCommand,DeleteCommand};
 use raft_rpc::apply_command_rpc_reply::{OkKo};
 use raft::network::{ClientChannel, NetworkChannel};
-use raft::common::{RequestVoteRequest, RequestVoteResponse, CandidateIdType, AppendEntriesResponse, AppendEntriesRequest, LogEntry, StateMachineCommand};
+use raft::common::{RequestVoteRequest, RequestVoteResponse, CandidateIdType, AppendEntriesResponse, AppendEntriesRequest, LogEntry, StateMachineCommand, ApplyCommandRequest, ApplyCommandStatus};
 use raft::{RaftServer, ServerConfig};
 use tokio::runtime::Runtime;
 use std::sync::{Arc, Mutex};
@@ -17,6 +17,7 @@ use std::ops::Deref;
 use chrono::Utc;
 use tonic::transport::{Endpoint, Channel};
 use std::time::Duration;
+use raft::common::ApplyCommandStatus::{Pending, Redirect};
 
 pub mod raft_rpc {
     tonic::include_proto!("raft_rpc"); // The string specified here must match the proto package name
@@ -148,8 +149,37 @@ impl RaftRpc for RaftRPCServerImpl {
         &self,
         request: Request<ApplyCommandRpcRequest>,
     ) -> Result<Response<ApplyCommandRpcReply>, Status> {
+        let request_obj=request.into_inner();
+        let state_machine_command=match request_obj.command.unwrap() {
+            raft_rpc::apply_command_rpc_request::Command::Put(putCommand) => {
+                StateMachineCommand::Put {
+                    key:String::from(&putCommand.key), value:String::from(&putCommand.value)
+                }
+            }
+            raft_rpc::apply_command_rpc_request::Command::Delete(deleteCommand) => {
+                StateMachineCommand::Delete {
+                    key:String::from(&deleteCommand.key)
+                }
+            }
+
+        };
+        let response=self.raft_server.on_apply_command(ApplyCommandRequest::new(state_machine_command));
+        let response_status=match response.status() {
+            ApplyCommandStatus::Ok => {
+                Some(raft_rpc::apply_command_rpc_reply::Status::Okko(0))
+            }
+            ApplyCommandStatus::Ko=> {
+                Some(raft_rpc::apply_command_rpc_reply::Status::Okko(1))
+            }
+            ApplyCommandStatus::Pending{token} => {
+                Some(raft_rpc::apply_command_rpc_reply::Status::Pending(raft_rpc::apply_command_rpc_reply::PendingStatus {token: *token}))
+            }
+            ApplyCommandStatus::Redirect{leader} => {
+                Some(raft_rpc::apply_command_rpc_reply::Status::Redirect(raft_rpc::apply_command_rpc_reply::RedirectStatus {leader: leader.to_string()}))
+            }
+        };
         let reply = raft_rpc::ApplyCommandRpcReply {
-            status: Some(raft_rpc::apply_command_rpc_reply::Status::Okko(0))
+            status: response_status
         };
         Ok(Response::new(reply))
     }

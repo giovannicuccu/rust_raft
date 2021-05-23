@@ -152,6 +152,12 @@ pub struct ApplyCommandRequest {
     command: StateMachineCommand,
 }
 
+impl ApplyCommandRequest {
+    pub fn new(command: StateMachineCommand) -> Self {
+        ApplyCommandRequest { command }
+    }
+}
+
 pub enum ApplyCommandStatus {
     Ok,
     Ko,
@@ -165,4 +171,15 @@ pub enum ApplyCommandStatus {
 
 pub struct ApplyCommandResponse {
     status: ApplyCommandStatus,
+}
+
+impl ApplyCommandResponse {
+    pub fn new(status: ApplyCommandStatus) -> Self {
+        ApplyCommandResponse { status }
+    }
+
+
+    pub fn status(&self) -> &ApplyCommandStatus {
+        &self.status
+    }
 }

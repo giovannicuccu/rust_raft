@@ -243,6 +243,10 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
         AppendEntriesResponse::new(self.persistent_state.current_term,true)
     }
 
+    pub fn on_apply_command(&self,append_entries_request: ApplyCommandRequest) -> ApplyCommandResponse {
+        ApplyCommandResponse::new(ApplyCommandStatus::Ok)
+    }
+
     pub fn manage_server_state(&self) {
         /*
         Nel nuovo desing questo gestisce le richieste di cambio stato da follower a candidate,etc
