@@ -1,7 +1,7 @@
 use rand::Rng;
 use std::fs::{create_dir, OpenOptions, metadata, remove_dir_all};
 use std::io::BufReader;
-use raft::log::{WriteAheadLog, RecordEntryIterator, WriteAheadLogEntry};
+use raft::log::{WriteAheadLog, RecordEntryIterator, WriteAheadLogEntry, HEADER_SIZE};
 use std::{env, time, thread};
 use std::path::PathBuf;
 
@@ -49,7 +49,7 @@ fn test_read_and_write_single_block(input_data_len: u32, expected_wal_blocks: u1
     let data1: Vec<u8>= create_vector_data_for_test(input_data_len);
 
     let mut wal = WriteAheadLog::new(dir.as_str()).unwrap();
-    wal.append_entry(WriteAheadLogEntry::new(1, 1,data1)).unwrap();
+    wal.append_entry(&data1).unwrap();
     wal.flush().unwrap();
 
     let file_metadata = metadata(&wal.path());
@@ -84,9 +84,9 @@ fn test_write_and_read_two_record() {
 
     let mut wal = WriteAheadLog::new(dir.as_str()).unwrap();
     let data1: Vec<u8>=vec![1,2,3,4];
-    wal.append_entry(WriteAheadLogEntry::new(1, 1,data1)).unwrap();
+    wal.append_entry(&data1).unwrap();
     let data2: Vec<u8>=vec![5,6,7,8];
-    wal.append_entry(WriteAheadLogEntry::new(1, 2,data2)).unwrap();
+    wal.append_entry(&data2).unwrap();
     wal.flush().unwrap();
     /*
     TODO capire perchè
@@ -120,13 +120,13 @@ fn test_write_and_read_four_record() {
 
     let mut wal = WriteAheadLog::new(dir.as_str()).unwrap();
     let data1: Vec<u8>=create_vector_data_for_test(100);
-    wal.append_entry(WriteAheadLogEntry::new(1, 1,data1)).unwrap();
+    wal.append_entry(&data1).unwrap();
     let data2: Vec<u8>=create_vector_data_for_test_01(150);
-    wal.append_entry(WriteAheadLogEntry::new(1, 2,data2)).unwrap();
+    wal.append_entry(&data2).unwrap();
     let data3: Vec<u8>=create_vector_data_for_test_02(250);
-    wal.append_entry(WriteAheadLogEntry::new(1, 3,data3)).unwrap();
+    wal.append_entry(&data3).unwrap();
     let data4: Vec<u8>=create_vector_data_for_test_03(350);
-    wal.append_entry(WriteAheadLogEntry::new(1, 4,data4)).unwrap();
+    wal.append_entry(&data4).unwrap();
     wal.flush().unwrap();
     /*
     TODO capire perchè
@@ -171,12 +171,12 @@ fn test_write_and_read_one_record_spanning_two_blocks() {
 
 #[test]
 fn test_write_and_read_one_record_filling_one_block() {
-    test_read_and_write_single_block(WriteAheadLog::block_size() as u32-15 as u32, 1);
+    test_read_and_write_single_block(WriteAheadLog::block_size() as u32- HEADER_SIZE as u32, 1);
 }
 
 #[test]
 fn test_write_and_read_one_record_overflowing_one_block() {
-    test_read_and_write_single_block(WriteAheadLog::block_size() as u32-14 as u32, 2);
+    test_read_and_write_single_block(WriteAheadLog::block_size() as u32- (HEADER_SIZE-1) as u32, 2);
 }
 
 #[test]
@@ -195,10 +195,10 @@ fn test_write_and_read_two_records_with_only_header_part() {
 
     let mut wal = WriteAheadLog::new(dir.as_str()).unwrap();
 
-    let data1: Vec<u8>=create_vector_data_for_test((WriteAheadLog::block_size() as usize - 30 as usize) as u32);
-    wal.append_entry(WriteAheadLogEntry::new(1, 1,data1)).unwrap();
+    let data1: Vec<u8>=create_vector_data_for_test((WriteAheadLog::block_size() as usize - (HEADER_SIZE*2) as usize) as u32);
+    wal.append_entry(&data1).unwrap();
     let data2: Vec<u8>=vec![5,6,7,8];
-    wal.append_entry(WriteAheadLogEntry::new(1, 2,data2)).unwrap();
+    wal.append_entry(&data2).unwrap();
     wal.flush().unwrap();
 
     let file_metadata = metadata(&wal.path());
@@ -208,7 +208,7 @@ fn test_write_and_read_two_records_with_only_header_part() {
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_some());
     let data_read=opt_entry.unwrap();
-    let data: Vec<u8>=create_vector_data_for_test((WriteAheadLog::block_size() as usize - 30 as usize) as u32);
+    let data: Vec<u8>=create_vector_data_for_test((WriteAheadLog::block_size() as usize - (HEADER_SIZE*2) as usize) as u32);
     assert_eq!(*data_read.data(),data);
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_some());
@@ -226,7 +226,7 @@ fn test_write_0_size_entry() {
 
     let mut wal = WriteAheadLog::new(dir.as_str()).unwrap();
 
-    assert!(wal.append_entry(WriteAheadLogEntry::new(1, 1, vec![])).err().is_some());
+    assert!(wal.append_entry(&vec![]).err().is_some());
     remove_dir_all(dir);
 }
 
@@ -240,7 +240,7 @@ fn test_no_write_and_reopen() {
     let mut wal = WriteAheadLog::from_path(wal_path.to_str().unwrap()).unwrap();
     let file_metadata = metadata(&wal.path());
     assert_eq!(file_metadata.unwrap().len(),1);
-    wal.append_entry(WriteAheadLogEntry::new(1, 1, create_vector_data_for_test((10 as usize) as u32))).unwrap();
+    wal.append_entry(&create_vector_data_for_test((10 as usize) as u32)).unwrap();
     wal.flush();
     let file_metadata = metadata(&wal.path());
     assert_eq!(file_metadata.unwrap().len(),(WriteAheadLog::block_size()as usize) as u64+1);
@@ -261,14 +261,14 @@ fn test_create_and_reset_log() {
     let mut wal = WriteAheadLog::new(dir.as_str()).unwrap();
 
     let data1: Vec<u8> = create_vector_data_for_test((10 as usize) as u32);
-    wal.append_entry(WriteAheadLogEntry::new(1, 1, data1)).unwrap();
+    wal.append_entry(&data1).unwrap();
     let data2: Vec<u8> = create_vector_data_for_test_01(15);
-    wal.append_entry(WriteAheadLogEntry::new(1, 2, data2)).unwrap();
+    wal.append_entry(&data2).unwrap();
     let data2: Vec<u8> = create_vector_data_for_test_01(20);
-    wal.append_entry(WriteAheadLogEntry::new(1, 3, data2)).unwrap();
-    wal.seek_and_clear_after(1,2).unwrap();
+    wal.append_entry(&data2).unwrap();
+    wal.seek_and_clear_after(2).unwrap();
     let data2: Vec<u8> = create_vector_data_for_test_01(20);
-    wal.append_entry(WriteAheadLogEntry::new(1, 3, data2)).unwrap();
+    wal.append_entry(&data2).unwrap();
     wal.flush().unwrap();
 
     let file_metadata = metadata(&wal.path());
@@ -304,11 +304,11 @@ fn test_create_and_reset_log_01() {
 
     let mut wal = WriteAheadLog::new(dir.as_str()).unwrap();
 
-    wal.append_entry(WriteAheadLogEntry::new(1, 1, create_vector_data_for_test(10))).unwrap();
-    wal.append_entry(WriteAheadLogEntry::new(1, 2, create_vector_data_for_test_01(15))).unwrap();
-    wal.append_entry(WriteAheadLogEntry::new(1, 3, create_vector_data_for_test_01(20))).unwrap();
-    wal.seek_and_clear_after(1,1).unwrap();
-    wal.append_entry(WriteAheadLogEntry::new(1, 3, create_vector_data_for_test_02(25))).unwrap();
+    wal.append_entry(&create_vector_data_for_test(10)).unwrap();
+    wal.append_entry(&create_vector_data_for_test_01(15)).unwrap();
+    wal.append_entry(& create_vector_data_for_test_01(20)).unwrap();
+    wal.seek_and_clear_after(1).unwrap();
+    wal.append_entry(&create_vector_data_for_test_02(25)).unwrap();
     wal.flush().unwrap();
 
     let file_metadata = metadata(&wal.path());
@@ -338,16 +338,16 @@ fn test_create_and_flush_and_reopen() {
 
     let mut wal = WriteAheadLog::new(dir.as_str()).unwrap();
 
-    wal.append_entry(WriteAheadLogEntry::new(1, 1, create_vector_data_for_test(10))).unwrap();
-    wal.append_entry(WriteAheadLogEntry::new(1, 2, create_vector_data_for_test_01(15))).unwrap();
-    wal.append_entry(WriteAheadLogEntry::new(1, 3, create_vector_data_for_test_01(20))).unwrap();
-    wal.seek_and_clear_after(1,1).unwrap();
-    wal.append_entry(WriteAheadLogEntry::new(1, 3, create_vector_data_for_test_02(25))).unwrap();
+    wal.append_entry(&create_vector_data_for_test(10)).unwrap();
+    wal.append_entry(&create_vector_data_for_test_01(15)).unwrap();
+    wal.append_entry(&create_vector_data_for_test_01(20)).unwrap();
+    wal.seek_and_clear_after(1).unwrap();
+    wal.append_entry(&create_vector_data_for_test_02(25)).unwrap();
     wal.flush().unwrap();
 
     let path_str= wal.path().clone().into_os_string().into_string().unwrap();
     let mut wal = WriteAheadLog::from_path(&*path_str).unwrap();
-    wal.append_entry(WriteAheadLogEntry::new(1, 4, create_vector_data_for_test_03(30))).unwrap();
+    wal.append_entry(&create_vector_data_for_test_03(30)).unwrap();
     wal.flush().unwrap();
 
     let file_metadata = metadata(&wal.path());
@@ -381,18 +381,18 @@ fn test_create_and_flush_multiple_times() {
 
     let mut wal = WriteAheadLog::new(dir.as_str()).unwrap();
 
-    wal.append_entry(WriteAheadLogEntry::new(1, 1, create_vector_data_for_test(10))).unwrap();
+    wal.append_entry(&create_vector_data_for_test(10)).unwrap();
     wal.flush().unwrap();
-    wal.append_entry(WriteAheadLogEntry::new(1, 2, create_vector_data_for_test_01(15))).unwrap();
+    wal.append_entry(&create_vector_data_for_test_01(15)).unwrap();
     wal.flush().unwrap();
-    wal.append_entry(WriteAheadLogEntry::new(1, 3, create_vector_data_for_test_02(20))).unwrap();
+    wal.append_entry(&create_vector_data_for_test_02(20)).unwrap();
     wal.flush().unwrap();
-    wal.append_entry(WriteAheadLogEntry::new(1, 4, create_vector_data_for_test_03(25))).unwrap();
+    wal.append_entry(&create_vector_data_for_test_03(25)).unwrap();
     wal.flush().unwrap();
 
     let path_str= wal.path().clone().into_os_string().into_string().unwrap();
     let mut wal = WriteAheadLog::from_path(&*path_str).unwrap();
-    wal.append_entry(WriteAheadLogEntry::new(1, 5, create_vector_data_for_test_03(30))).unwrap();
+    wal.append_entry(&create_vector_data_for_test_03(30)).unwrap();
     wal.flush().unwrap();
 
     let file_metadata = metadata(&wal.path());
@@ -437,12 +437,12 @@ fn test_create_and_flush_and_reopen_block_boundary() {
 
     let mut wal = WriteAheadLog::new(dir.as_str()).unwrap();
 
-    wal.append_entry(WriteAheadLogEntry::new(1, 1, create_vector_data_for_test((WriteAheadLog::block_size() - 15) as u32))).unwrap();
+    wal.append_entry(&create_vector_data_for_test((WriteAheadLog::block_size() - HEADER_SIZE as u16) as u32)).unwrap();
     wal.flush().unwrap();
 
     let path_str= wal.path().clone().into_os_string().into_string().unwrap();
     let mut wal = WriteAheadLog::from_path(&*path_str).unwrap();
-    wal.append_entry(WriteAheadLogEntry::new(1, 4, create_vector_data_for_test_03(30))).unwrap();
+    wal.append_entry(&create_vector_data_for_test_03(30)).unwrap();
     wal.flush().unwrap();
 
     let file_metadata = metadata(&wal.path());
@@ -452,7 +452,7 @@ fn test_create_and_flush_and_reopen_block_boundary() {
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_some());
     let data_read=opt_entry.unwrap();
-    assert_eq!(*data_read.data(),create_vector_data_for_test((WriteAheadLog::block_size() - 15) as u32));
+    assert_eq!(*data_read.data(),create_vector_data_for_test((WriteAheadLog::block_size() - HEADER_SIZE as u16) as u32));
 
 
     let opt_entry=log_reader.next();
@@ -472,13 +472,13 @@ fn test_create_and_flush_and_reopen_block_boundary_2_blocks() {
 
     let mut wal = WriteAheadLog::new(dir.as_str()).unwrap();
 
-    wal.append_entry(WriteAheadLogEntry::new(1, 1, create_vector_data_for_test((WriteAheadLog::block_size() - 15) as u32))).unwrap();
-    wal.append_entry(WriteAheadLogEntry::new(1, 1, create_vector_data_for_test_01((WriteAheadLog::block_size() - 15) as u32))).unwrap();
+    wal.append_entry(&create_vector_data_for_test((WriteAheadLog::block_size() - HEADER_SIZE as u16) as u32)).unwrap();
+    wal.append_entry(&create_vector_data_for_test_01((WriteAheadLog::block_size() - HEADER_SIZE as u16) as u32)).unwrap();
     wal.flush().unwrap();
 
     let path_str= wal.path().clone().into_os_string().into_string().unwrap();
     let mut wal = WriteAheadLog::from_path(&*path_str).unwrap();
-    wal.append_entry(WriteAheadLogEntry::new(1, 4, create_vector_data_for_test_03(30))).unwrap();
+    wal.append_entry(&create_vector_data_for_test_03(30)).unwrap();
     wal.flush().unwrap();
 
     let file_metadata = metadata(&wal.path());
@@ -489,12 +489,12 @@ fn test_create_and_flush_and_reopen_block_boundary_2_blocks() {
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_some());
     let data_read=opt_entry.unwrap();
-    assert_eq!(*data_read.data(),create_vector_data_for_test((WriteAheadLog::block_size() - 15) as u32));
+    assert_eq!(*data_read.data(),create_vector_data_for_test((WriteAheadLog::block_size() - HEADER_SIZE as u16) as u32));
 
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_some());
     let data_read=opt_entry.unwrap();
-    assert_eq!(*data_read.data(),create_vector_data_for_test_01((WriteAheadLog::block_size() - 15) as u32));
+    assert_eq!(*data_read.data(),create_vector_data_for_test_01((WriteAheadLog::block_size() - HEADER_SIZE as u16) as u32));
 
     let opt_entry=log_reader.next();
     assert!(opt_entry.is_some());
@@ -513,11 +513,11 @@ fn test_create_and_read_without_flush() {
     let mut wal = WriteAheadLog::new(dir.as_str()).unwrap();
 
     let data1: Vec<u8> = create_vector_data_for_test(10);
-    wal.append_entry(WriteAheadLogEntry::new(1, 1, data1)).unwrap();
+    wal.append_entry(&data1).unwrap();
     let data2: Vec<u8> = create_vector_data_for_test_01(15);
-    wal.append_entry(WriteAheadLogEntry::new(1, 2, data2)).unwrap();
+    wal.append_entry(&data2).unwrap();
     let data2: Vec<u8> = create_vector_data_for_test_01(20);
-    wal.append_entry(WriteAheadLogEntry::new(1, 3, data2)).unwrap();
+    wal.append_entry(&data2).unwrap();
 
 
     //wal.flush().unwrap();
@@ -556,12 +556,12 @@ fn test_create_and_read_without_flush_multiple_blocks() {
     let mut wal = WriteAheadLog::new(dir.as_str()).unwrap();
 
     let data1: Vec<u8> = create_vector_data_for_test(WriteAheadLog::block_size() as u32);
-    wal.append_entry(WriteAheadLogEntry::new(1, 1, data1)).unwrap();
+    wal.append_entry(&data1).unwrap();
     wal.flush();
     let data2: Vec<u8> = create_vector_data_for_test_01(15);
-    wal.append_entry(WriteAheadLogEntry::new(1, 2, data2)).unwrap();
+    wal.append_entry(&data2).unwrap();
     let data2: Vec<u8> = create_vector_data_for_test_01(20);
-    wal.append_entry(WriteAheadLogEntry::new(1, 3, data2)).unwrap();
+    wal.append_entry(&data2).unwrap();
 
 
     //wal.flush().unwrap();
@@ -600,11 +600,11 @@ fn test_create_and_seek_without_flush() {
     let mut wal = WriteAheadLog::new(dir.as_str()).unwrap();
 
     let data1: Vec<u8> = create_vector_data_for_test(10);
-    wal.append_entry(WriteAheadLogEntry::new(1, 1, data1)).unwrap();
+    wal.append_entry(&data1).unwrap();
     let data2: Vec<u8> = create_vector_data_for_test_01(15);
-    wal.append_entry(WriteAheadLogEntry::new(1, 2, data2)).unwrap();
+    wal.append_entry(&data2).unwrap();
     let data2: Vec<u8> = create_vector_data_for_test_01(20);
-    wal.append_entry(WriteAheadLogEntry::new(1, 3, data2)).unwrap();
+    wal.append_entry(&data2).unwrap();
 
 
     //wal.flush().unwrap();
@@ -632,12 +632,12 @@ fn test_create_and_seek_without_flush_multiple_blocks() {
     let mut wal = WriteAheadLog::new(dir.as_str()).unwrap();
 
     let data1: Vec<u8> = create_vector_data_for_test(WriteAheadLog::block_size() as u32);
-    wal.append_entry(WriteAheadLogEntry::new(1, 1, data1)).unwrap();
+    wal.append_entry(&data1).unwrap();
     wal.flush();
     let data2: Vec<u8> = create_vector_data_for_test_01(15);
-    wal.append_entry(WriteAheadLogEntry::new(1, 2, data2)).unwrap();
+    wal.append_entry(&data2).unwrap();
     let data2: Vec<u8> = create_vector_data_for_test_01(20);
-    wal.append_entry(WriteAheadLogEntry::new(1, 3, data2)).unwrap();
+    wal.append_entry(&data2).unwrap();
 
 
     //wal.flush().unwrap();
@@ -671,13 +671,13 @@ fn test_create_and_seek_without_flush_multiple_blocks_01() {
 
     let mut wal = WriteAheadLog::new(dir.as_str()).unwrap();
 
-    wal.append_entry(WriteAheadLogEntry::new(1, 1, create_vector_data_for_test(WriteAheadLog::block_size() as u32))).unwrap();
-    wal.append_entry(WriteAheadLogEntry::new(1, 2, create_vector_data_for_test(WriteAheadLog::block_size() as u32))).unwrap();
+    wal.append_entry(&create_vector_data_for_test(WriteAheadLog::block_size() as u32)).unwrap();
+    wal.append_entry(&create_vector_data_for_test(WriteAheadLog::block_size() as u32)).unwrap();
     wal.flush();
     let data2: Vec<u8> = create_vector_data_for_test_01(15);
-    wal.append_entry(WriteAheadLogEntry::new(1, 3, data2)).unwrap();
+    wal.append_entry(&data2).unwrap();
     let data2: Vec<u8> = create_vector_data_for_test_01(20);
-    wal.append_entry(WriteAheadLogEntry::new(1, 4, data2)).unwrap();
+    wal.append_entry(&data2).unwrap();
 
 
     //wal.flush().unwrap();

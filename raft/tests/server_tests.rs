@@ -311,9 +311,9 @@ fn create_test_dir() -> String {
 
 #[test]
 fn testThreeServers() {
-    let server_config_1=ServerConfig::new(1,65,100, 9090,vec![String::from("server2"),String::from("server3")],create_test_dir());
-    let server_config_2=ServerConfig::new(2,65,100, 9091,vec![String::from("server1"),String::from("server3")],create_test_dir());
-    let server_config_3=ServerConfig::new(3,65,100, 9092,vec![String::from("server1"),String::from("server2")],create_test_dir());
+    let server_config_1=ServerConfig::new(1,65,100, 9090,vec![String::from("server2"),String::from("server3")],create_test_dir(),create_test_dir());
+    let server_config_2=ServerConfig::new(2,65,100, 9091,vec![String::from("server1"),String::from("server3")],create_test_dir(), create_test_dir());
+    let server_config_3=ServerConfig::new(3,65,100, 9092,vec![String::from("server1"),String::from("server2")],create_test_dir(), create_test_dir());
 
     let mut children = vec![];
 
@@ -356,7 +356,7 @@ Se non raccolgo gli handle il programma finisce subito
 
 #[test]
 fn test_start_one_server() {
-    let server_config_1=ServerConfig::new(1,65,100, 9090,vec![String::from("server2"),String::from("server3")],String::from("d:\\temp\\10"));
+    let server_config_1=ServerConfig::new(1,65,100, 9090,vec![String::from("server2"),String::from("server3")],String::from("d:\\temp\\10\\wal"),String::from("d:\\temp\\10\\sm"));
 
     let mut children = vec![];
 

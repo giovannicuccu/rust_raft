@@ -22,7 +22,7 @@ use crate::common::{TermType, IndexType};
 
 const BLOCK_SIZE: u16 = 32768;
 
-const HEADER_SIZE: u8 = 15;
+pub const HEADER_SIZE: u8 = 11;
 
 const FULL: u8 = 1;
 const FIRST: u8 = 2;
@@ -38,7 +38,6 @@ struct RecordEntry {
     crc: u32,
     size: u16,
     entry_type: u8,
-    term: TermType,
     index: IndexType,
     value: Vec<u8>,
 }
@@ -52,20 +51,17 @@ pub struct WriteAheadLog {
     writer: File,
     blocks_written: u32,
     current_block: Vec<u8>,
+    current_index: IndexType,
 }
 
 pub struct WriteAheadLogEntry {
-    term: TermType,
     index: IndexType,
     data: Vec<u8>,
 }
 
 impl WriteAheadLogEntry {
-    pub fn new(term: u32, index: u32, data: Vec<u8>) -> Self {
-        WriteAheadLogEntry { term, index, data }
-    }
-    pub fn term(&self) -> u32 {
-        self.term
+    pub fn new(index: u32, data: Vec<u8>) -> Self {
+        WriteAheadLogEntry { index, data }
     }
     pub fn index(&self) -> u32 {
         self.index
@@ -90,14 +86,18 @@ impl WriteAheadLog {
         let version_buffer=[FORMAT_VERSION; 1];
         file.write_all(&version_buffer);
         file.flush();
-        Ok(WriteAheadLog { path, writer: file, blocks_written: 0, current_block: vec![]})
+        Ok(WriteAheadLog { path, writer: file, blocks_written: 0, current_block: vec![],current_index:0})
     }
 
     /// Creates a WAL from an existing file path.
     pub fn from_path(path: &str) -> io::Result<Self> {
 
         let mut log_reader=RecordEntryIterator::new(PathBuf::from(path),vec![]).unwrap();
-        while let Some(_wal_entry)=log_reader.next(){ println!("wal_read buf_len {}",log_reader.current_buffer_len());}
+        let mut last_index=0;
+        while let Some(wal_entry)=log_reader.next(){
+            println!("wal_read buf_len {}",log_reader.current_buffer_len());
+            last_index=wal_entry.index;
+        }
         let blocks_read=log_reader.blocks_read;
         println!("wal_read buf_len {}",log_reader.current_buffer_len());
         let offset_in_block=(BLOCK_SIZE - log_reader.current_buffer_len() as u16) as usize;
@@ -141,45 +141,48 @@ impl WriteAheadLog {
             path: PathBuf::from(path),
             writer: file,
             blocks_written,
-            current_block
+            current_block,
+            current_index:last_index,
         })
     }
 
-    pub fn append_entry(&mut self, mut entry: WriteAheadLogEntry ) -> io::Result<()> {
-        if entry.data.len()==0 {
+    pub fn append_entry(&mut self, entry : &Vec<u8> ) -> io::Result<IndexType> {
+        if entry.len()==0 {
             return Err(Error::new(ErrorKind::Other, "The entry data is empty"));
         }
+        let mut entry_data:Vec<u8> =Vec::new();
+        entry_data.extend(&entry[0..entry.len()]);
+        self.current_index+=1;
         if self.current_block.len()+(HEADER_SIZE as usize) <= (BLOCK_SIZE as usize) {
-            if self.current_block.len()+(HEADER_SIZE as usize)+entry.data.len()<= (BLOCK_SIZE as usize) {
+            if self.current_block.len()+(HEADER_SIZE as usize)+entry_data.len()<= (BLOCK_SIZE as usize) {
                 println!("writing record<block_size");
-                self.append_record(FULL, entry.term, entry.index,  entry.data)?;
+                self.append_record(FULL, self.current_index,  entry_data)?;
             } else {
                 let available_buffer_len=(BLOCK_SIZE as usize)-self.current_block.len()-(HEADER_SIZE as usize);
-                let entry_part=entry.data.drain(0..available_buffer_len).collect();
-                self.append_record(FIRST, entry.term, entry.index,entry_part)?;
-                while entry.data.len()+(HEADER_SIZE as usize)>(BLOCK_SIZE as usize) {
+                let entry_part=entry_data.drain(0..available_buffer_len).collect();
+                self.append_record(FIRST, self.current_index,entry_part)?;
+                while entry_data.len()+(HEADER_SIZE as usize)>(BLOCK_SIZE as usize) {
                     let available_buffer_len=(BLOCK_SIZE as usize)-self.current_block.len()-(HEADER_SIZE as usize);
-                    let entry_part=entry.data.drain(0..available_buffer_len).collect();
-                    self.append_record(MIDDLE, entry.term, entry.index,entry_part)?;
+                    let entry_part=entry_data.drain(0..available_buffer_len).collect();
+                    self.append_record(MIDDLE, self.current_index,entry_part)?;
                 }
-                if entry.data.len()>0 {
-                    self.append_record(LAST, entry.term, entry.index, entry.data)?;
+                if entry_data.len()>0 {
+                    self.append_record(LAST, self.current_index, entry_data)?;
                 }
             }
         } else {
             println!("self.current_block.len()={}",self.current_block.len());
             return Err(Error::new(ErrorKind::Other, "Internal error incorrect current_block size "));
         }
-        Ok(())
+        Ok(self.current_index)
     }
 
-    fn append_record(&mut self, entry_type:u8, term: TermType, index: IndexType, mut entry : Vec<u8>) -> io::Result<()> {
+    fn append_record(&mut self, entry_type:u8, index: IndexType, mut entry : Vec<u8>) -> io::Result<()> {
         let crc:u32=CASTAGNOLI.checksum(&entry);
         self.current_block.append(&mut Vec::from(crc.to_le_bytes()));
         let size:u16= entry.len() as u16;
         self.current_block.append(&mut Vec::from(size.to_le_bytes()));
         self.current_block.append(&mut Vec::from(entry_type.to_le_bytes()));
-        self.current_block.append(&mut Vec::from(term.to_le_bytes()));
         self.current_block.append(&mut Vec::from(index.to_le_bytes()));
         self.current_block.append(&mut entry);
         println!("wrote crc={},size={},entry_type={},index={}",crc,size, entry_type,index);
@@ -192,7 +195,7 @@ impl WriteAheadLog {
         Ok(())
     }
 
-    pub fn seek_and_clear_after(&mut self, term: TermType, index: IndexType) -> io::Result<()> {
+    pub fn seek_and_clear_after(&mut self, index: IndexType) -> io::Result<()> {
         self.flush();
         let mut file = OpenOptions::new().read(true).write(true).open(&self.path)?;
         //println!("path={}", self.path.display());
@@ -204,7 +207,7 @@ impl WriteAheadLog {
              */
         //for wal_entry in log_reader {
             //println!("entry term={}, index={}", wal_entry.term, wal_entry.index);
-            if wal_entry.term==term && wal_entry.index==index {
+            if wal_entry.index==index {
                 //println!("entry found");
                 found=true;
                 break;
@@ -253,6 +256,15 @@ impl WriteAheadLog {
 
         }
         self.writer.flush()
+    }
+
+    pub fn last_entry(&self) -> Option<WriteAheadLogEntry> {
+        let mut iterator=self.record_entry_iterator().unwrap();
+        let mut last_entry=None;
+        while let Some(log_entry) = iterator.next() {
+            last_entry=Some(log_entry);
+        }
+        last_entry
     }
 
     pub fn path(&self) -> &PathBuf {
@@ -315,7 +327,6 @@ fn read_from_vec(vec: &mut Vec<u8>)-> Option<RecordEntry> {
         let size = u16::from_le_bytes(vec.drain(0..2).collect::<Vec<u8>>().try_into().expect("size sub array with incorrect length"));
 
         let entry_type = u8::from_le_bytes(vec.drain(0..1).collect::<Vec<u8>>().try_into().expect("entry type sub array with incorrect length"));
-        let term = u32::from_le_bytes(vec.drain(0..4).collect::<Vec<u8>>().try_into().expect("term sub array with incorrect length"));
         let index = u32::from_le_bytes(vec.drain(0..4).collect::<Vec<u8>>().try_into().expect("index sub array with incorrect length"));
         let value = vec.drain(0..size as usize).collect::<Vec<u8>>();
         let calculated_crc = CASTAGNOLI.checksum(&value);
@@ -327,7 +338,6 @@ fn read_from_vec(vec: &mut Vec<u8>)-> Option<RecordEntry> {
                 crc,
                 size,
                 entry_type,
-                term,
                 index,
                 value,
             })
@@ -354,22 +364,17 @@ impl RecordEntryIterator {
                 if !contains_entry {
                     break;
                 }
-                let actual_term = u32::from_le_bytes(self.in_memory_fragment[pos_in_buffer + 7..pos_in_buffer +11].try_into().unwrap());
-                let actual_index = u32::from_le_bytes(self.in_memory_fragment[pos_in_buffer + 11..pos_in_buffer +15].try_into().unwrap());
+                let actual_index = u32::from_le_bytes(self.in_memory_fragment[pos_in_buffer + 7..pos_in_buffer +11].try_into().unwrap());
                 let size = u16::from_le_bytes(self.in_memory_fragment[pos_in_buffer + 4..pos_in_buffer +6].try_into().unwrap());
                 let entry_type = u8::from_le_bytes(self.in_memory_fragment[pos_in_buffer + 6..pos_in_buffer +7].try_into().unwrap());
-                if term >= actual_term {
-                    if actual_index < index {
-                        pos_in_buffer+=(HEADER_SIZE as u16 +size) as usize;
+                if actual_index < index {
+                    pos_in_buffer+=(HEADER_SIZE as u16 +size) as usize;
 
-                    } else if actual_index==index && (entry_type==FULL || entry_type==LAST) {
-                        //controllo su entry type ridondante presente solo per scruopolo
-                        self.in_memory_fragment.drain(0..pos_in_buffer+HEADER_SIZE as usize +size as usize);
-                        self.reading_in_memory=true;
-                        return Ok(());
-                    } else {
-                        break;
-                    }
+                } else if actual_index==index && (entry_type==FULL || entry_type==LAST) {
+                    //controllo su entry type ridondante presente solo per scruopolo
+                    self.in_memory_fragment.drain(0..pos_in_buffer+HEADER_SIZE as usize +size as usize);
+                    self.reading_in_memory=true;
+                    return Ok(());
                 } else {
                     break;
                 }
@@ -378,7 +383,7 @@ impl RecordEntryIterator {
         }
         let mut found=false;
         while let Some(wal_entry)=self.next(){
-            if wal_entry.term==term && wal_entry.index==index {
+            if wal_entry.index==index {
                 found=true;
                 break;
             }
@@ -454,7 +459,7 @@ impl Iterator for RecordEntryIterator {
                 log_value.append(&mut actual_record.value);
                 if actual_record.entry_type==FULL {
                     return if expect_first_or_full {
-                        Some(WriteAheadLogEntry{ term:actual_record.term, index: actual_record.index, data:log_value})
+                        Some(WriteAheadLogEntry{ index: actual_record.index, data:log_value})
                     } else {
                         None
                     }
@@ -474,7 +479,7 @@ impl Iterator for RecordEntryIterator {
                }
                if actual_record.entry_type==LAST {
                    return if expect_middle_or_last {
-                       Some(WriteAheadLogEntry{ term:actual_record.term, index: actual_record.index, data:log_value})
+                       Some(WriteAheadLogEntry{ index: actual_record.index, data:log_value})
                    } else {
                        None
                    }

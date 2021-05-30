@@ -1,7 +1,7 @@
 use sled::{Db, IVec, Error};
 use crate::common::{StateMachineCommand};
 
-struct StateMachine {
+pub struct StateMachine {
     db: Db,
 }
 

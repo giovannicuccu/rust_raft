@@ -1,3 +1,4 @@
+use serde::{Serialize, Deserialize};
 
 pub type TermType = u32;
 pub type IndexType= u32;
@@ -57,8 +58,7 @@ impl RequestVoteResponse {
     }
 }
 
-
-#[derive(PartialEq, PartialOrd,Clone)]
+#[derive(Serialize, Deserialize,PartialEq, PartialOrd,Clone, Debug)]
 pub enum StateMachineCommand {
     Put {
         key:String,
@@ -148,6 +148,7 @@ impl AppendEntriesResponse {
     }
 }
 
+#[derive(Serialize, Deserialize,PartialEq, PartialOrd,Clone, Debug)]
 pub struct ApplyCommandRequest {
     command: StateMachineCommand,
 }

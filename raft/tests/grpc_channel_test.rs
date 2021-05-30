@@ -230,7 +230,7 @@ impl NetworkChannel for RaftRpcNetworkChannelTest {
 
 #[test]
 fn testOneServer() {
-    let server_config_1=ServerConfig::new(1,65,100, 9090,vec![String::from("http://localhost:9091"),String::from("http://localhost:9092")],String::from("d:\\temp\\10"));
+    let server_config_1=ServerConfig::new(1,65,100, 9090,vec![String::from("http://localhost:9091"),String::from("http://localhost:9092")],String::from("d:\\temp\\10\\wal"),String::from("c:\\temp\\10\\sm"));
     thread::spawn(|| {
         RaftRPCServerImplTest::start(server_config_1);
     });

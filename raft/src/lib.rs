@@ -15,8 +15,9 @@ use rayon::prelude::IntoParallelRefIterator;
 use rayon::iter::ParallelIterator;
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::path::{PathBuf, Path};
-use crate::log::WriteAheadLog;
+use crate::log::{WriteAheadLog, WriteAheadLogEntry};
 use walkdir::WalkDir;
+use crate::state_machine::StateMachine;
 
 
 const NO_INDEX : IndexType = 0;
@@ -36,8 +37,10 @@ Put e Delete con variabili di tipo Stringa sia per i nomi degli stati che per i 
 
 struct ServerPersistentState {
     current_term:TermType,
+    current_index:IndexType,
     voted_for:Mutex<CandidateIdType>,
-    log:Vec<LogEntry>,
+    log: Arc<Mutex<WriteAheadLog>>,
+    state_machine: Arc<Mutex<StateMachine>>,
 
 }
 
@@ -55,18 +58,20 @@ pub struct ServerConfig {
     server_port:u16,
     other_nodes_in_cluster: Vec<String>,
     wal_dir:String,
+    state_machine_dir: String,
 }
 
 impl ServerConfig {
     pub fn new(id: CandidateIdType,  election_timeout_min: u32, election_timeout_max: u32,
-               server_port:u16, other_nodes_in_cluster: Vec<String>,wal_dir:String) -> ServerConfig {
+               server_port:u16, other_nodes_in_cluster: Vec<String>,wal_dir:String, state_machine_dir: String) -> ServerConfig {
         ServerConfig {
             id,
             election_timeout_min,
             election_timeout_max,
             server_port,
             other_nodes_in_cluster,
-            wal_dir
+            wal_dir,
+            state_machine_dir
         }
     }
     pub fn id(&self)-> CandidateIdType {
@@ -109,8 +114,7 @@ pub struct RaftServer<C:ClientChannel> {
     server_state: Mutex<ServerState>,
     config: ServerConfig,
     clients_for_servers_in_cluster: Vec<C>,
-    wal: Arc<Mutex<WriteAheadLog>>,
-    //server_channel: S,
+
 }
 
 
@@ -172,12 +176,20 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
             None => {println!("found wal dir {}",file_dir); WriteAheadLog::new(file_dir).unwrap()},
             Some(file_name) => {println!("found wal file {}",file_name);WriteAheadLog::from_path(&*file_name).unwrap()},
         };
+        let last_entry=wal.last_entry();
+        let last_index =match last_entry {
+            None => { NO_INDEX }
+            Some( log_entry) => { log_entry.index() }
+        };
         let wal_mutex=Arc::new(Mutex::new(wal));
+        let state_machine_mutex=Arc::new(Mutex::new(StateMachine::open(server_config.state_machine_dir.clone())));
         RaftServer {
             persistent_state: ServerPersistentState {
                 current_term:NO_TERM,
+                current_index: last_index,
                 voted_for:Mutex::new(NO_CANDIDATE_ID),
-                log: Vec::new(),
+                log: wal_mutex,
+                state_machine: state_machine_mutex
             },
             volatile_state: Mutex::new(ServerVolatileState {
                 commit_index:NO_VALUE,
@@ -192,7 +204,7 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
              */
 
             clients_for_servers_in_cluster: clients,
-            wal: wal_mutex,
+
         }
 
     }
@@ -203,8 +215,10 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
             return RequestVoteResponse::new(NO_TERM,false);
         }
         let mut last_index=NO_INDEX;
-        if self.persistent_state.log.last().is_some() {
-            last_index=self.persistent_state.log.last().unwrap().index();
+        let log_mutex=self.persistent_state.log.lock().unwrap();
+        let last_entry_opt= log_mutex.last_entry();
+        if last_entry_opt.is_some() {
+            last_index=last_entry_opt.unwrap().index();
         }
 
         let mut voted_for_guard=self.persistent_state.voted_for.lock().unwrap();
@@ -244,6 +258,11 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
     }
 
     pub fn on_apply_command(&self,append_entries_request: ApplyCommandRequest) -> ApplyCommandResponse {
+        let encoded_command: Vec<u8> = bincode::serialize(&append_entries_request).unwrap();
+        //self.persistent_state.current_index+=1;
+        let mut log_mutex =self.persistent_state.log.lock().unwrap();
+
+        log_mutex.append_entry(&encoded_command);
         ApplyCommandResponse::new(ApplyCommandStatus::Ok)
     }
 
@@ -354,12 +373,11 @@ gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
  */
         let mut last_log_index=NO_INDEX;
         let mut last_log_term = NO_TERM;
-        let last_log=self.persistent_state.log.last();
-        if last_log.is_some() {
-            let last_log_entry=self.persistent_state.log.last().unwrap();
+        let log_mutex=self.persistent_state.log.lock().unwrap();
+        let last_entry_opt= log_mutex.last_entry();
+        if last_entry_opt.is_some() {
+            let last_log_entry=last_entry_opt.unwrap();
             last_log_index=last_log_entry.index();
-            last_log_term=last_log_entry.term();
-
         }
         let ok_votes=AtomicIsize::new(0);
 
