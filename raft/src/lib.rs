@@ -13,7 +13,7 @@ use std::sync::{Mutex, Arc};
 use chrono::Utc;
 use rayon::prelude::IntoParallelRefIterator;
 use rayon::iter::ParallelIterator;
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicIsize, Ordering, AtomicU32};
 use std::path::{PathBuf, Path};
 use crate::log::{WriteAheadLog, WriteAheadLogEntry};
 use walkdir::WalkDir;
@@ -114,6 +114,7 @@ pub struct RaftServer<C:ClientChannel> {
     server_state: Mutex<ServerState>,
     config: ServerConfig,
     clients_for_servers_in_cluster: Vec<C>,
+    log_indexes_for_servers_in_cluster: Vec<AtomicU32>,
 
 }
 
@@ -150,6 +151,7 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
         Capire perchè dopo che ho messo clients_len si incammella con il tipo
          */
         let clients:Vec<C>=server_config.other_nodes_in_cluster.iter().map(|address|network_channel.client_channel(String::from(address))).collect();
+        let log_index_for_remotes:Vec<AtomicU32>=server_config.other_nodes_in_cluster.iter().map(|address|AtomicU32::new(0)).collect();
         let file_dir = server_config.wal_dir.as_str();
         let mut last_modified=0;
         let mut file_name:Option<String>=None;
@@ -183,6 +185,7 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
         };
         let wal_mutex=Arc::new(Mutex::new(wal));
         let state_machine_mutex=Arc::new(Mutex::new(StateMachine::open(server_config.state_machine_dir.clone())));
+
         RaftServer {
             persistent_state: ServerPersistentState {
                 current_term:NO_TERM,
@@ -204,6 +207,7 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
              */
 
             clients_for_servers_in_cluster: clients,
+            log_indexes_for_servers_in_cluster: log_index_for_remotes,
 
         }
 
@@ -262,7 +266,7 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
         //self.persistent_state.current_index+=1;
         let mut log_mutex =self.persistent_state.log.lock().unwrap();
 
-        log_mutex.append_entry(&encoded_command);
+        log_mutex.append_entry(self.persistent_state.current_term, &encoded_command);
         ApplyCommandResponse::new(ApplyCommandStatus::Ok)
     }
 
@@ -443,6 +447,30 @@ gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
                 RaftServerState::Leader
             }
         }
+    }
+
+    fn send_append_entries_for_remote(&self, index:usize) {
+        let mut log =self.persistent_state.log.lock().unwrap();
+        let log_index=&self.log_indexes_for_servers_in_cluster[index];
+        let last_log_index=log_index.load(Ordering::Release);
+        let mut log_reader =log.record_entry_iterator().unwrap();
+        let seek_result=log_reader.seek(last_log_index);
+        let mut log_entries =vec![];
+        if seek_result.is_ok() {
+            while let Some(wal_entry)=log_reader.next() {
+                let data=wal_entry.data();
+                let state_machine_command = bincode::deserialize(&data).unwrap();
+                log_entries.push(LogEntry::new(self.persistent_state.current_term, wal_entry.index(),state_machine_command));
+            }
+            let mutex_volatile_state_guard = self.volatile_state.lock().unwrap();
+            AppendEntriesRequest::new(self.persistent_state.current_term,
+                                      self.config.id(),last_log_index, 1,
+                                      log_entries,mutex_volatile_state_guard.commit_index);
+
+        } else {
+            //TODO: decidere cosa fare non dovrebbe mai accadere.....
+        }
+
     }
 
 }

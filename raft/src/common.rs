@@ -70,27 +70,29 @@ pub enum StateMachineCommand {
 }
 
 pub struct LogEntry {
-    index: IndexType,
     term: TermType,
+    index: IndexType,
     state_machine_command: StateMachineCommand,
 }
 
 impl LogEntry {
 
-    pub fn new(index: IndexType, term: TermType, state_machine_command: StateMachineCommand) -> Self {
-        LogEntry { index, term, state_machine_command }
+    pub fn new(term: TermType, index: IndexType,  state_machine_command: StateMachineCommand) -> Self {
+        LogEntry { term, index, state_machine_command }
     }
+
+
 
     pub fn index(&self) -> IndexType {
         self.index
     }
 
-    pub fn term(&self) -> TermType {
-        self.term
-    }
-
     pub fn state_machine_command(&self) -> &StateMachineCommand {
         &self.state_machine_command
+    }
+
+    pub fn term(&self) -> u32 {
+        self.term
     }
 }
 

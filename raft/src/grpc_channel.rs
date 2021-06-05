@@ -114,7 +114,8 @@ impl RaftRpc for RaftRPCServerImpl {
             match command_res {
                 Ok(command) => {
                     Ok(LogEntry::new(
-                        entry.index, entry.term,
+                        entry.term,
+                        entry.index,
                         command)
                     )
                 }
