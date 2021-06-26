@@ -61,6 +61,11 @@ pub struct ServerConfig {
     state_machine_dir: String,
 }
 
+struct LeaderState {
+    next_index:Vec<AtomicU32>,
+    match_index:Vec<AtomicU32>,
+}
+
 impl ServerConfig {
     pub fn new(id: CandidateIdType,  election_timeout_min: u32, election_timeout_max: u32,
                server_port:u16, other_nodes_in_cluster: Vec<String>,wal_dir:String, state_machine_dir: String) -> ServerConfig {
@@ -90,12 +95,9 @@ impl ServerConfig {
 Leader State specificato nel protocollo si applica solo se il server è di tipo Leader
 Rust consente di specificare degli enum con valori diversi per cui uso questa potenzialità
  */
-#[derive(PartialEq, PartialOrd,Clone)]
+#[derive(PartialEq, Clone)]
 enum ServerState {
-    Leader {
-        next_index:Vec<IndexType>,
-        match_index:Vec<IndexType>,
-    },
+    Leader,
     Follower,
     Candidate,
 }
@@ -114,8 +116,7 @@ pub struct RaftServer<C:ClientChannel> {
     server_state: Mutex<ServerState>,
     config: ServerConfig,
     clients_for_servers_in_cluster: Vec<C>,
-    log_indexes_for_servers_in_cluster: Vec<AtomicU32>,
-
+    leader_state: Mutex<LeaderState>,
 }
 
 
@@ -207,8 +208,7 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
              */
 
             clients_for_servers_in_cluster: clients,
-            log_indexes_for_servers_in_cluster: log_index_for_remotes,
-
+            leader_state: Mutex::new(LeaderState {next_index: vec![], match_index: vec![]})
         }
 
     }
@@ -255,7 +255,7 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
                 let mut mutex_volatile_state_guard = self.volatile_state.lock().unwrap();
                 mutex_volatile_state_guard.last_heartbeat_time=Instant::now();
                 let now = Utc::now();
-                println!("id:{} - on_append_entries ServerState now is Follower={} now ={}",self.config.id,*mutex_guard==Follower, now.timestamp_millis());
+                //println!("id:{} - on_append_entries ServerState now is Follower={} now ={}",self.config.id,*mutex_guard==Follower, now.timestamp_millis());
             }
         }
         AppendEntriesResponse::new(self.persistent_state.current_term,true)
@@ -334,10 +334,21 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
                     if self.send_requests_vote() {
                         let mut mutex_guard = self.server_state.lock().unwrap();
                         if *mutex_guard==Candidate {
-                            *mutex_guard = Leader {
-                                next_index: vec![],
-                                match_index: vec![]
-                            };
+                            let remotes_num=self.clients_for_servers_in_cluster.len();
+                            let mut log =self.persistent_state.log.lock().unwrap();
+                            let opt_last_log_id=log.last_entry().map(|entry| entry.index());
+                            *mutex_guard = Leader;
+                            let mut leader_state=self.leader_state.lock().unwrap();
+                            let mut vec=Vec::new();
+                            for _ in 1..=remotes_num {
+                                vec.push(AtomicU32::new(opt_last_log_id.unwrap_or(0)));
+                            }
+                            leader_state.next_index=vec;
+                            let mut vec=Vec::new();
+                            for _ in 1..=remotes_num {
+                                vec.push(AtomicU32::new(0));
+                            }
+                            leader_state.match_index=vec;
                             let mut voted_for_guard = self.persistent_state.voted_for.lock().unwrap();
                             *voted_for_guard = self.config.id;
                         }
@@ -351,7 +362,7 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
                     }
                 }
                 //uso ref per non prendere la ownership
-                ServerState::Leader { ref next_index, ref match_index} =>{
+                ServerState::Leader =>{
                     println!("id:{} - start ServerState::Leader at {}",self.config.id, Utc::now().timestamp_millis());
                     if self.send_append_entries() {
 
@@ -451,7 +462,9 @@ gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
 
     fn send_append_entries_for_remote(&self, index:usize) {
         let mut log =self.persistent_state.log.lock().unwrap();
-        let log_index=&self.log_indexes_for_servers_in_cluster[index];
+        let leader_state=self.leader_state.lock().unwrap();
+        let match_index=&leader_state.match_index[index];
+        let log_index=&leader_state.next_index[index];
         let last_log_index=log_index.load(Ordering::Release);
         let mut log_reader =log.record_entry_iterator().unwrap();
         let seek_result=log_reader.seek(last_log_index);
@@ -463,10 +476,24 @@ gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
                 log_entries.push(LogEntry::new(self.persistent_state.current_term, wal_entry.index(),state_machine_command));
             }
             let mutex_volatile_state_guard = self.volatile_state.lock().unwrap();
-            AppendEntriesRequest::new(self.persistent_state.current_term,
+            let append_entries_request=AppendEntriesRequest::new(self.persistent_state.current_term,
                                       self.config.id(),last_log_index, 1,
                                       log_entries,mutex_volatile_state_guard.commit_index);
-
+            let client_channel=&self.clients_for_servers_in_cluster[index];
+            let append_entries_response=client_channel.send_append_entries(append_entries_request);
+            if append_entries_response.is_ok() {
+                if append_entries_response.ok().unwrap().success() {
+                    let now = Utc::now();
+                    match_index.store(log_index.load(Ordering::Release),Ordering::Release);
+                    log_index.fetch_add(1,Ordering::Release);
+                    println!("id:{} - send_append_entries response succeded at {}", self.config.id, now.timestamp_millis());
+                } else {
+                    log_index.fetch_sub(1,Ordering::Release);
+                    println!("id:{} - send_append_entries response NOT succeded", self.config.id);
+                }
+            } else {
+                println!("id:{} - send_append_entries response ko",self.config.id);
+            }
         } else {
             //TODO: decidere cosa fare non dovrebbe mai accadere.....
         }
