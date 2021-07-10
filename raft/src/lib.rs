@@ -6,10 +6,11 @@ mod state_machine;
 use crate::ServerState::{Follower, Candidate, Leader};
 use crate::common::*;
 use crate::network::*;
-use std::time::Instant;
+use std::time::{Instant, Duration};
 use rand::prelude::*;
 use std::{thread, time};
-use std::sync::{Mutex, Arc};
+use std::sync::{Arc};
+use parking_lot::{Mutex, Condvar};
 use chrono::Utc;
 use rayon::prelude::IntoParallelRefIterator;
 use rayon::iter::ParallelIterator;
@@ -18,6 +19,7 @@ use std::path::{PathBuf, Path};
 use crate::log::{WriteAheadLog, WriteAheadLogEntry};
 use walkdir::WalkDir;
 use crate::state_machine::StateMachine;
+use std::collections::HashMap;
 
 
 const NO_INDEX : IndexType = 0;
@@ -117,6 +119,7 @@ pub struct RaftServer<C:ClientChannel> {
     config: ServerConfig,
     clients_for_servers_in_cluster: Vec<C>,
     leader_state: Mutex<LeaderState>,
+    wait_map: Mutex<HashMap<IndexType,Arc<(Mutex<bool>, Condvar)>>>
 }
 
 
@@ -208,7 +211,8 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
              */
 
             clients_for_servers_in_cluster: clients,
-            leader_state: Mutex::new(LeaderState {next_index: vec![], match_index: vec![]})
+            leader_state: Mutex::new(LeaderState {next_index: vec![], match_index: vec![]}),
+            wait_map: Mutex::new(HashMap::new()),
         }
 
     }
@@ -219,13 +223,13 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
             return RequestVoteResponse::new(NO_TERM,false);
         }
         let mut last_index=NO_INDEX;
-        let log_mutex=self.persistent_state.log.lock().unwrap();
+        let log_mutex=self.persistent_state.log.lock();
         let last_entry_opt= log_mutex.last_entry();
         if last_entry_opt.is_some() {
             last_index=last_entry_opt.unwrap().index();
         }
 
-        let mut voted_for_guard=self.persistent_state.voted_for.lock().unwrap();
+        let mut voted_for_guard=self.persistent_state.voted_for.lock();
         //println!("id:{} - on_request_vote voted_for={}, candidate={} term",*voted_for_guard,request_vote_request.candidate_id(),self.config.id);
         if (*voted_for_guard==NO_CANDIDATE_ID || *voted_for_guard==request_vote_request.candidate_id()) &&
             //verificare se è meglio ottenere il valore di last con getOrElse o qualcosa del genere
@@ -240,19 +244,19 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
 
     pub fn on_append_entries(&self,append_entries_request: AppendEntriesRequest) -> AppendEntriesResponse {
         println!("id:{} - on_append_entries begin",self.config.id);
-        let mut mutex_guard = self.server_state.lock().unwrap();
+        let mut mutex_guard = self.server_state.lock();
         println!("id:{} - on_append_entries got mutex at {}",self.config.id,Utc::now().timestamp_millis());
         match *mutex_guard {
             ServerState::Leader { .. } => {}
             Follower => {
                 println!("id:{} - on_append_entries ServerState::Follower",self.config.id);
-                let mut mutex_volatile_state_guard = self.volatile_state.lock().unwrap();
+                let mut mutex_volatile_state_guard = self.volatile_state.lock();
                 mutex_volatile_state_guard.last_heartbeat_time=Instant::now();
             }
             Candidate => {
                 println!("id:{} - on_append_entries ServerState::Candidate will become Follower",self.config.id);
                 *mutex_guard = Follower;
-                let mut mutex_volatile_state_guard = self.volatile_state.lock().unwrap();
+                let mut mutex_volatile_state_guard = self.volatile_state.lock();
                 mutex_volatile_state_guard.last_heartbeat_time=Instant::now();
                 let now = Utc::now();
                 //println!("id:{} - on_append_entries ServerState now is Follower={} now ={}",self.config.id,*mutex_guard==Follower, now.timestamp_millis());
@@ -264,9 +268,21 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
     pub fn on_apply_command(&self,append_entries_request: ApplyCommandRequest) -> ApplyCommandResponse {
         let encoded_command: Vec<u8> = bincode::serialize(&append_entries_request).unwrap();
         //self.persistent_state.current_index+=1;
-        let mut log_mutex =self.persistent_state.log.lock().unwrap();
+        let mut log_mutex =self.persistent_state.log.lock();
 
-        log_mutex.append_entry(self.persistent_state.current_term, &encoded_command);
+        let result=log_mutex.append_entry(self.persistent_state.current_term, &encoded_command);
+        if result.is_ok() {
+            let mut wait_map=self.wait_map.lock();
+            let pair=Arc::new((Mutex::new(false), Condvar::new()));
+            wait_map.insert(result.unwrap(),pair.clone());
+            let &(ref mutex, ref cond_var) = &*pair;
+            let mut started = mutex.lock();
+            while !*started {
+                // TODO Rendere parametrizzabile i millisecondi di attesa
+                cond_var.wait_for(&mut started, Duration::from_millis(500));
+            }
+        }
+
         ApplyCommandResponse::new(ApplyCommandStatus::Ok)
     }
 
@@ -309,19 +325,19 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
             this means that the input expression is evaluated to a memory location where the value lives.
             match works by doing this evaluation and then inspecting the data at that memory location.
              */
-            let mutex_guard = self.server_state.lock().unwrap();
+            let mutex_guard = self.server_state.lock();
             let server_state_cloned=mutex_guard.clone();
             let now = Instant::now();
             drop(mutex_guard);
             match server_state_cloned {
                 ServerState::Follower => {
-                    let mutex_volatile_state_guard = self.volatile_state.lock().unwrap();
+                    let mutex_volatile_state_guard = self.volatile_state.lock();
                     println!("id:{} - start ServerState::Follower last heartbit  {} ms ago",self.config.id,now.duration_since(mutex_volatile_state_guard.last_heartbeat_time).as_millis());
                     let election_timeout: u32 = rng.gen_range(self.config.election_timeout_min..=self.config.election_timeout_max);
                     if now.duration_since(mutex_volatile_state_guard.last_heartbeat_time).as_millis() >= election_timeout as u128 {
                         //il timeout è random fra due range da definire--
                         //Avviare la richiesta di voto
-                        let mut mutex_guard = self.server_state.lock().unwrap();
+                        let mut mutex_guard = self.server_state.lock();
                         *mutex_guard = Candidate;
                         let now_utc = Utc::now();
                         println!("id:{} - start ServerState::Follower becoming candidate at {}",self.config.id, now_utc.timestamp_millis());
@@ -332,13 +348,13 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
                 ServerState::Candidate =>{
                     println!("id:{} - start ServerState::Candidate",self.config.id);
                     if self.send_requests_vote() {
-                        let mut mutex_guard = self.server_state.lock().unwrap();
+                        let mut mutex_guard = self.server_state.lock();
                         if *mutex_guard==Candidate {
                             let remotes_num=self.clients_for_servers_in_cluster.len();
-                            let mut log =self.persistent_state.log.lock().unwrap();
+                            let mut log =self.persistent_state.log.lock();
                             let opt_last_log_id=log.last_entry().map(|entry| entry.index());
                             *mutex_guard = Leader;
-                            let mut leader_state=self.leader_state.lock().unwrap();
+                            let mut leader_state=self.leader_state.lock();
                             let mut vec=Vec::new();
                             for _ in 1..=remotes_num {
                                 vec.push(AtomicU32::new(opt_last_log_id.unwrap_or(0)));
@@ -349,11 +365,11 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
                                 vec.push(AtomicU32::new(0));
                             }
                             leader_state.match_index=vec;
-                            let mut voted_for_guard = self.persistent_state.voted_for.lock().unwrap();
+                            let mut voted_for_guard = self.persistent_state.voted_for.lock();
                             *voted_for_guard = self.config.id;
                         }
                     } else {
-                        let mutex_guard = self.server_state.lock().unwrap();
+                        let mutex_guard = self.server_state.lock();
                         if *mutex_guard==Candidate {
                             let election_timeout: u32 = rng.gen_range(self.config.election_timeout_min..=self.config.election_timeout_max);
                             println!("id:{} - start ServerState::Candidate will sleep for  {} ms ", self.config.id, election_timeout);
@@ -388,7 +404,7 @@ gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
  */
         let mut last_log_index=NO_INDEX;
         let mut last_log_term = NO_TERM;
-        let log_mutex=self.persistent_state.log.lock().unwrap();
+        let log_mutex=self.persistent_state.log.lock();
         let last_entry_opt= log_mutex.last_entry();
         if last_entry_opt.is_some() {
             let last_log_entry=last_entry_opt.unwrap();
@@ -446,7 +462,7 @@ gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
     }
 
     pub fn server_state(&self) ->RaftServerState {
-        let server_state=self.server_state.lock().unwrap();
+        let server_state=self.server_state.lock();
         match *server_state {
             ServerState::Follower => {
                 RaftServerState::Follower
@@ -460,22 +476,27 @@ gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
         }
     }
 
-    fn send_append_entries_for_remote(&self, index:usize) {
-        let mut log =self.persistent_state.log.lock().unwrap();
-        let leader_state=self.leader_state.lock().unwrap();
+
+
+
+    fn send_append_entries_to_remote(&self, index:usize) {
+        let mut log =self.persistent_state.log.lock();
+        let leader_state=self.leader_state.lock();
         let match_index=&leader_state.match_index[index];
         let log_index=&leader_state.next_index[index];
         let last_log_index=log_index.load(Ordering::Release);
         let mut log_reader =log.record_entry_iterator().unwrap();
         let seek_result=log_reader.seek(last_log_index);
         let mut log_entries =vec![];
+        let mut last_log_index_sent=last_log_index;
         if seek_result.is_ok() {
             while let Some(wal_entry)=log_reader.next() {
                 let data=wal_entry.data();
                 let state_machine_command = bincode::deserialize(&data).unwrap();
+                last_log_index_sent=wal_entry.index();
                 log_entries.push(LogEntry::new(self.persistent_state.current_term, wal_entry.index(),state_machine_command));
             }
-            let mutex_volatile_state_guard = self.volatile_state.lock().unwrap();
+            let mutex_volatile_state_guard = self.volatile_state.lock();
             let append_entries_request=AppendEntriesRequest::new(self.persistent_state.current_term,
                                       self.config.id(),last_log_index, 1,
                                       log_entries,mutex_volatile_state_guard.commit_index);
@@ -484,9 +505,21 @@ gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
             if append_entries_response.is_ok() {
                 if append_entries_response.ok().unwrap().success() {
                     let now = Utc::now();
-                    match_index.store(log_index.load(Ordering::Release),Ordering::Release);
-                    log_index.fetch_add(1,Ordering::Release);
                     println!("id:{} - send_append_entries response succeded at {}", self.config.id, now.timestamp_millis());
+                    match_index.store(last_log_index_sent,Ordering::Release);
+                    log_index.store(last_log_index_sent+1,Ordering::Release);
+                    let mut wait_map=self.wait_map.lock();
+                    for sent_index in last_log_index..=last_log_index_sent {
+                        let opt_cond_var=wait_map.get(&sent_index);
+                        if opt_cond_var.is_some() {
+                            let pair=opt_cond_var.unwrap();
+                            let &(ref lock, ref cvar) = &**pair;
+                            let mut started = lock.lock();
+                            *started = true;
+                            cvar.notify_one();
+                        }
+                        wait_map.remove(&sent_index);
+                    }
                 } else {
                     log_index.fetch_sub(1,Ordering::Release);
                     println!("id:{} - send_append_entries response NOT succeded", self.config.id);
