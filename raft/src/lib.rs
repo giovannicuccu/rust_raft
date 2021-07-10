@@ -479,9 +479,11 @@ gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
 
 
 
-    fn send_append_entries_to_remote(&self, index:usize) {
-        let mut log =self.persistent_state.log.lock();
-        let leader_state=self.leader_state.lock();
+    fn send_append_entries_to_remote(index:usize, persistent_state: ServerPersistentState, leader_state: Mutex<LeaderState>,
+                                     config: ServerConfig, wait_map: Mutex<HashMap<IndexType,Arc<(Mutex<bool>, Condvar)>>>,
+                                     volatile_state: Mutex<ServerVolatileState>, clients_for_servers_in_cluster: Vec<C>) {
+        let mut log =persistent_state.log.lock();
+        let leader_state=leader_state.lock();
         let match_index=&leader_state.match_index[index];
         let log_index=&leader_state.next_index[index];
         let last_log_index=log_index.load(Ordering::Release);
@@ -494,21 +496,21 @@ gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
                 let data=wal_entry.data();
                 let state_machine_command = bincode::deserialize(&data).unwrap();
                 last_log_index_sent=wal_entry.index();
-                log_entries.push(LogEntry::new(self.persistent_state.current_term, wal_entry.index(),state_machine_command));
+                log_entries.push(LogEntry::new(persistent_state.current_term, wal_entry.index(),state_machine_command));
             }
-            let mutex_volatile_state_guard = self.volatile_state.lock();
-            let append_entries_request=AppendEntriesRequest::new(self.persistent_state.current_term,
-                                      self.config.id(),last_log_index, 1,
+            let mutex_volatile_state_guard = volatile_state.lock();
+            let append_entries_request=AppendEntriesRequest::new(persistent_state.current_term,
+                                      config.id(),last_log_index, 1,
                                       log_entries,mutex_volatile_state_guard.commit_index);
-            let client_channel=&self.clients_for_servers_in_cluster[index];
+            let client_channel=&clients_for_servers_in_cluster[index];
             let append_entries_response=client_channel.send_append_entries(append_entries_request);
             if append_entries_response.is_ok() {
                 if append_entries_response.ok().unwrap().success() {
                     let now = Utc::now();
-                    println!("id:{} - send_append_entries response succeded at {}", self.config.id, now.timestamp_millis());
+                    println!("id:{} - send_append_entries response succeded at {}", config.id, now.timestamp_millis());
                     match_index.store(last_log_index_sent,Ordering::Release);
                     log_index.store(last_log_index_sent+1,Ordering::Release);
-                    let mut wait_map=self.wait_map.lock();
+                    let mut wait_map=wait_map.lock();
                     for sent_index in last_log_index..=last_log_index_sent {
                         let opt_cond_var=wait_map.get(&sent_index);
                         if opt_cond_var.is_some() {
@@ -522,10 +524,10 @@ gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
                     }
                 } else {
                     log_index.fetch_sub(1,Ordering::Release);
-                    println!("id:{} - send_append_entries response NOT succeded", self.config.id);
+                    println!("id:{} - send_append_entries response NOT succeded", config.id);
                 }
             } else {
-                println!("id:{} - send_append_entries response ko",self.config.id);
+                println!("id:{} - send_append_entries response ko",config.id);
             }
         } else {
             //TODO: decidere cosa fare non dovrebbe mai accadere.....
