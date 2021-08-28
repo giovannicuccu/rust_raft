@@ -20,6 +20,7 @@ use crate::log::{WriteAheadLog, WriteAheadLogEntry};
 use walkdir::WalkDir;
 use crate::state_machine::StateMachine;
 use std::collections::HashMap;
+use std::cmp::min;
 
 
 const NO_INDEX : IndexType = 0;
@@ -250,6 +251,46 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
             ServerState::Leader { .. } => {}
             Follower => {
                 println!("id:{} - on_append_entries ServerState::Follower",self.config.id);
+                if self.persistent_state.current_term>append_entries_request.term() {
+                    return AppendEntriesResponse::new(self.persistent_state.current_term,false);
+                }
+                let mut log =self.persistent_state.log.lock();
+                let mut log_reader =log.record_entry_iterator().unwrap();
+                let seek_result=log_reader.seek(append_entries_request.prev_log_index());
+                if seek_result.is_ok() {
+                    let log_entry=seek_result.unwrap();
+                    if log_entry.term()!=append_entries_request.term() {
+                        return AppendEntriesResponse::new(self.persistent_state.current_term,false);
+                    }
+                    let mut prev_index_opt=None;
+                    for entry in append_entries_request.entries() {
+                        let entry_opt=log_reader.next();
+                        if entry_opt.is_none() {
+                            let encoded_command: Vec<u8> = bincode::serialize(entry.state_machine_command()).unwrap();
+                            log.append_entry(append_entries_request.term(), &encoded_command);
+                        } else {
+                            let log_entry=entry_opt.unwrap();
+                            if entry.index()!=log_entry.index() {
+                                //TODO: capire cosa fare non dovrebbe mai accadere
+                            } else {
+                                if entry.term()!=log_entry.term() {
+                                    match prev_index_opt {
+                                        None =>  {log.seek_and_clear_after(append_entries_request.prev_log_index()); }
+                                        Some(index) => {log.seek_and_clear_after(index);}
+                                    }
+                                    let encoded_command: Vec<u8> = bincode::serialize(entry.state_machine_command()).unwrap();
+                                    log.append_entry(append_entries_request.term(), &encoded_command);
+                                } else {
+                                    //TODO controllare che la entry coincida
+                                }
+                            }
+                        }
+                    }
+                    let mut volatile_state=self.volatile_state.lock();
+                    if append_entries_request.entries().len()>0 {
+                        volatile_state.commit_index = min(append_entries_request.leader_commit(), append_entries_request.entries().last().unwrap().index());
+                    }
+                }
                 let mut mutex_volatile_state_guard = self.volatile_state.lock();
                 mutex_volatile_state_guard.last_heartbeat_time=Instant::now();
             }

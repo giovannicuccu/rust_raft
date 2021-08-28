@@ -58,18 +58,23 @@ pub struct WriteAheadLog {
 
 pub struct WriteAheadLogEntry {
     index: IndexType,
+    term: TermType,
     data: Vec<u8>,
 }
 
 impl WriteAheadLogEntry {
-    pub fn new(index: u32, data: Vec<u8>) -> Self {
-        WriteAheadLogEntry { index, data }
+    pub fn new(index: IndexType, term: TermType, data: Vec<u8>) -> Self {
+        WriteAheadLogEntry { index, term, data }
     }
     pub fn index(&self) -> u32 {
         self.index
     }
+
     pub fn data(&self) -> &Vec<u8> {
         &self.data
+    }
+    pub fn term(&self) -> TermType {
+        self.term
     }
 }
 
@@ -363,7 +368,7 @@ fn read_from_vec(vec: &mut Vec<u8>)-> Option<RecordEntry> {
 }
 
 impl RecordEntryIterator {
-    pub fn seek(&mut self, index: IndexType) -> io::Result<()>{
+    pub fn seek(&mut self, index: IndexType) -> io::Result<WriteAheadLogEntry>{
         if self.in_memory_fragment.len()>=HEADER_SIZE as usize {
             let mut pos_in_buffer=0;
             while pos_in_buffer+(HEADER_SIZE as usize)<self.in_memory_fragment.len() {
@@ -382,6 +387,7 @@ impl RecordEntryIterator {
                 let actual_index = u32::from_le_bytes(self.in_memory_fragment[pos_in_buffer + 11..pos_in_buffer +15].try_into().unwrap());
                 let size = u16::from_le_bytes(self.in_memory_fragment[pos_in_buffer + 4..pos_in_buffer +6].try_into().unwrap());
                 let entry_type = u8::from_le_bytes(self.in_memory_fragment[pos_in_buffer + 6..pos_in_buffer +7].try_into().unwrap());
+                let data = self.in_memory_fragment[pos_in_buffer + 15..pos_in_buffer + 15 +size as usize].to_owned();
                 if actual_index < index {
                     pos_in_buffer+=(HEADER_SIZE as u16 +size) as usize;
 
@@ -389,7 +395,7 @@ impl RecordEntryIterator {
                     //controllo su entry type ridondante presente solo per scruopolo
                     self.in_memory_fragment.drain(0..pos_in_buffer+HEADER_SIZE as usize +size as usize);
                     self.reading_in_memory=true;
-                    return Ok(());
+                    return Ok(WriteAheadLogEntry{ index, term: actual_term, data });
                 } else {
                     break;
                 }
@@ -399,15 +405,10 @@ impl RecordEntryIterator {
         let mut found=false;
         while let Some(wal_entry)=self.next(){
             if wal_entry.index==index {
-                found=true;
-                break;
+                return Ok(wal_entry)
             }
         }
-        return if found {
-            Ok(())
-        } else {
-            Err(Error::new(ErrorKind::Other, "could not find term and index"))
-        }
+        Err(Error::new(ErrorKind::Other, "could not find term and index"))
 
     }
 
@@ -481,7 +482,7 @@ impl Iterator for RecordEntryIterator {
                 println!("actual_record.entry_type {} ",actual_record.entry_type);
                 if actual_record.entry_type==FULL {
                     return if expect_first_or_full {
-                        Some(WriteAheadLogEntry{ index: actual_record.index, data:log_value})
+                        Some(WriteAheadLogEntry{ index: actual_record.index, term:actual_record.term, data:log_value})
                     } else {
                         println!("expect_first_or_full failed for full");
                         None
@@ -504,7 +505,7 @@ impl Iterator for RecordEntryIterator {
                }
                if actual_record.entry_type==LAST {
                    return if expect_middle_or_last {
-                       Some(WriteAheadLogEntry{ index: actual_record.index, data:log_value})
+                       Some(WriteAheadLogEntry{ index: actual_record.index, term:actual_record.term, data:log_value})
                    } else {
                        println!("expect_middle_or_last failed for last ");
                        None
