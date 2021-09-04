@@ -114,13 +114,13 @@ pub enum RaftServerState {
 }
 
 pub struct RaftServer<C:ClientChannel> {
-    persistent_state: ServerPersistentState,
-    volatile_state: Mutex<ServerVolatileState>,
+    persistent_state: Arc<ServerPersistentState>,
+    volatile_state: Arc<Mutex<ServerVolatileState>>,
     server_state: Mutex<ServerState>,
-    config: ServerConfig,
-    clients_for_servers_in_cluster: Vec<C>,
-    leader_state: Mutex<LeaderState>,
-    wait_map: Mutex<HashMap<IndexType,Arc<(Mutex<bool>, Condvar)>>>
+    config: Arc<ServerConfig>,
+    clients_for_servers_in_cluster: Arc<Vec<C>>,
+    leader_state: Arc<Mutex<LeaderState>>,
+    wait_map: Arc<Mutex<HashMap<IndexType,Arc<(Mutex<bool>, Condvar)>>>>
 }
 
 
@@ -148,7 +148,7 @@ fn main() -> Result<()> {
 }
  */
 
-impl <C:ClientChannel+Send+Sync >RaftServer<C> {
+impl <C:'static + ClientChannel+Send+Sync >RaftServer<C> {
 
     pub fn new<N: NetworkChannel<Client=C>>(server_config: ServerConfig, network_channel:N) -> RaftServer<C> {
         //let server_channel=network_channel.server_channel();
@@ -192,28 +192,28 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
         let state_machine_mutex=Arc::new(Mutex::new(StateMachine::open(server_config.state_machine_dir.clone())));
 
         RaftServer {
-            persistent_state: ServerPersistentState {
+            persistent_state: Arc::new(ServerPersistentState {
                 current_term:NO_TERM,
                 current_index: last_index,
                 voted_for:Mutex::new(NO_CANDIDATE_ID),
                 log: wal_mutex,
                 state_machine: state_machine_mutex
-            },
-            volatile_state: Mutex::new(ServerVolatileState {
+            }),
+            volatile_state: Arc::new(Mutex::new(ServerVolatileState {
                 commit_index:NO_VALUE,
                 last_applied:NO_VALUE,
                 last_heartbeat_time: Instant::now(),
-            }),
+            })),
             server_state: Mutex::new(Follower),
-            config: server_config,
+            config: Arc::new(server_config),
             /*
             Perchè la cosa abbia un senso devo fare discover dei server del cluster
             all'avvio del server -> uso un metodo per fare discovery dei nodi
              */
 
-            clients_for_servers_in_cluster: clients,
-            leader_state: Mutex::new(LeaderState {next_index: vec![], match_index: vec![]}),
-            wait_map: Mutex::new(HashMap::new()),
+            clients_for_servers_in_cluster: Arc::new(clients),
+            leader_state: Arc::new(Mutex::new(LeaderState {next_index: vec![], match_index: vec![]})),
+            wait_map: Arc::new(Mutex::new(HashMap::new())),
         }
 
     }
@@ -268,20 +268,20 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
                         if entry_opt.is_none() {
                             let encoded_command: Vec<u8> = bincode::serialize(entry.state_machine_command()).unwrap();
                             log.append_entry(append_entries_request.term(), &encoded_command);
+                            prev_index_opt=Some(entry.index());
                         } else {
                             let log_entry=entry_opt.unwrap();
                             if entry.index()!=log_entry.index() {
                                 //TODO: capire cosa fare non dovrebbe mai accadere
                             } else {
+                                println!("id:{} - on_append_entries ServerState::Follower replicating entry {}",self.config.id, entry.index());
                                 if entry.term()!=log_entry.term() {
                                     match prev_index_opt {
-                                        None =>  {log.seek_and_clear_after(append_entries_request.prev_log_index()); }
-                                        Some(index) => {log.seek_and_clear_after(index);}
+                                        None => { log.seek_and_clear_after(append_entries_request.prev_log_index()); }
+                                        Some(index) => { log.seek_and_clear_after(index); }
                                     }
-                                    let encoded_command: Vec<u8> = bincode::serialize(entry.state_machine_command()).unwrap();
-                                    log.append_entry(append_entries_request.term(), &encoded_command);
-                                } else {
-                                    //TODO controllare che la entry coincida
+                                let encoded_command: Vec<u8> = bincode::serialize(entry.state_machine_command()).unwrap();
+                                log.append_entry(append_entries_request.term(), &encoded_command);
                                 }
                             }
                         }
@@ -437,6 +437,34 @@ impl <C:ClientChannel+Send+Sync >RaftServer<C> {
         //}
     }
 
+    pub fn start_senders(&self) {
+        let mutex_guard = self.server_state.lock();
+        let server_state_cloned=mutex_guard.clone();
+        let now = Instant::now();
+        drop(mutex_guard);
+        match server_state_cloned {
+            ServerState::Leader =>{
+                for i in 0..self.clients_for_servers_in_cluster.len() {
+                    let th_persistent_state=Arc::clone(&self.persistent_state);
+                    let th_leader_state=Arc::clone(&self.leader_state);
+                    let th_config=Arc::clone(&self.config);
+                    let th_wait_map=Arc::clone(&self.wait_map);
+                    let th_volatile_state=Arc::clone(&self.volatile_state);
+                    let th_clients_for_servers_in_cluster=Arc::clone(&self.clients_for_servers_in_cluster);
+                    thread::spawn(move || {
+                        loop {
+
+                            RaftServer::send_append_entries_to_remote(i, &th_persistent_state,
+                                                                      *th_leader_state, *th_config, *th_wait_map,
+                                                                      *th_volatile_state, *th_clients_for_servers_in_cluster);
+                        }
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn send_requests_vote(&self)-> bool {
         //println!(" send_requests_vote start");
 /*
@@ -519,8 +547,8 @@ gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
 
 
 
-
-    fn send_append_entries_to_remote(index:usize, persistent_state: ServerPersistentState, leader_state: Mutex<LeaderState>,
+    //TODO: qui posso usare le reference dove serve non gli oggetti
+    fn send_append_entries_to_remote(index:usize, persistent_state: &ServerPersistentState, leader_state: Mutex<LeaderState>,
                                      config: ServerConfig, wait_map: Mutex<HashMap<IndexType,Arc<(Mutex<bool>, Condvar)>>>,
                                      volatile_state: Mutex<ServerVolatileState>, clients_for_servers_in_cluster: Vec<C>) {
         let mut log =persistent_state.log.lock();
