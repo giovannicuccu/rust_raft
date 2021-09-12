@@ -40,7 +40,7 @@ Put e Delete con variabili di tipo Stringa sia per i nomi degli stati che per i 
 
 struct ServerPersistentState {
     current_term:TermType,
-    current_index:IndexType,
+    current_index:AtomicU32,
     voted_for:Mutex<CandidateIdType>,
     log: Arc<Mutex<WriteAheadLog>>,
     state_machine: Arc<Mutex<StateMachine>>,
@@ -194,7 +194,7 @@ impl <C:'static + ClientChannel+Send+Sync >RaftServer<C> {
         RaftServer {
             persistent_state: Arc::new(ServerPersistentState {
                 current_term:NO_TERM,
-                current_index: last_index,
+                current_index: AtomicU32::new(last_index),
                 voted_for:Mutex::new(NO_CANDIDATE_ID),
                 log: wal_mutex,
                 state_machine: state_machine_mutex
@@ -313,9 +313,11 @@ impl <C:'static + ClientChannel+Send+Sync >RaftServer<C> {
 
         let result=log_mutex.append_entry(self.persistent_state.current_term, &encoded_command);
         if result.is_ok() {
+            let index=result.unwrap();
+            self.persistent_state.current_index.store(index, Ordering::SeqCst);
             let mut wait_map=self.wait_map.lock();
             let pair=Arc::new((Mutex::new(false), Condvar::new()));
-            wait_map.insert(result.unwrap(),pair.clone());
+            wait_map.insert(index,pair.clone());
             let &(ref mutex, ref cond_var) = &*pair;
             let mut started = mutex.lock();
             while !*started {
@@ -455,8 +457,8 @@ impl <C:'static + ClientChannel+Send+Sync >RaftServer<C> {
                         loop {
 
                             RaftServer::send_append_entries_to_remote(i, &th_persistent_state,
-                                                                      *th_leader_state, *th_config, *th_wait_map,
-                                                                      *th_volatile_state, *th_clients_for_servers_in_cluster);
+                                                                      &th_leader_state, &th_config, &th_wait_map,
+                                                                      &th_volatile_state, &th_clients_for_servers_in_cluster);
                         }
                     });
                 }
@@ -548,14 +550,17 @@ gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
 
 
     //TODO: qui posso usare le reference dove serve non gli oggetti
-    fn send_append_entries_to_remote(index:usize, persistent_state: &ServerPersistentState, leader_state: Mutex<LeaderState>,
-                                     config: ServerConfig, wait_map: Mutex<HashMap<IndexType,Arc<(Mutex<bool>, Condvar)>>>,
-                                     volatile_state: Mutex<ServerVolatileState>, clients_for_servers_in_cluster: Vec<C>) {
+    fn send_append_entries_to_remote(index:usize, persistent_state: &ServerPersistentState, leader_state: &Mutex<LeaderState>,
+                                     config: &ServerConfig, wait_map: &Mutex<HashMap<IndexType,Arc<(Mutex<bool>, Condvar)>>>,
+                                     volatile_state: &Mutex<ServerVolatileState>, clients_for_servers_in_cluster: &Vec<C>) {
         let mut log =persistent_state.log.lock();
         let leader_state=leader_state.lock();
         let match_index=&leader_state.match_index[index];
         let log_index=&leader_state.next_index[index];
         let last_log_index=log_index.load(Ordering::Release);
+        if last_log_index==persistent_state.current_index.load(Ordering::Relaxed) {
+            return;
+        }
         let mut log_reader =log.record_entry_iterator().unwrap();
         let seek_result=log_reader.seek(last_log_index);
         let mut log_entries =vec![];
