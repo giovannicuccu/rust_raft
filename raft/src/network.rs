@@ -1,4 +1,4 @@
-use crate::common::{RequestVoteRequest, RequestVoteResponse, AppendEntriesRequest, AppendEntriesResponse};
+use crate::common::{RequestVoteRequest, RequestVoteResponse, AppendEntriesRequest, AppendEntriesResponse, ApplyCommandRequest, ApplyCommandResponse};
 
 /*
 cerco qualcosa che sia chiaro e che leghi insieme i concetti di client e
@@ -42,5 +42,9 @@ pub trait NetworkChannel<C:ClientChannel>{
 pub trait NetworkChannel{
     type Client : ClientChannel;
     fn client_channel(&self,remote_address: String)->Self::Client;
+}
+
+pub trait RaftClient {
+    fn apply_command(&self, append_entries_request: ApplyCommandRequest)-> Result<ApplyCommandResponse,()>;
 }
 

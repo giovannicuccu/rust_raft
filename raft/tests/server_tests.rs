@@ -1,7 +1,7 @@
 use std::sync::mpsc::{Sender, Receiver, channel, RecvTimeoutError};
 use raft::{ServerConfig, RaftServer, RaftServerState};
-use raft::network::{ClientChannel, NetworkChannel};
-use raft::common::{AppendEntriesResponse, RequestVoteRequest, AppendEntriesRequest, RequestVoteResponse};
+use raft::network::{ClientChannel, NetworkChannel, RaftClient};
+use raft::common::{AppendEntriesResponse, RequestVoteRequest, AppendEntriesRequest, RequestVoteResponse, ApplyCommandRequest, ApplyCommandResponse};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::{thread, time, env};
@@ -97,17 +97,23 @@ struct RaftTestServerImpl {
     server_name: String,
     channel_factory: Arc<RaftTestNetworkChannelFactory>,
     shutdown: Arc<AtomicBool>,
+    raft_client: TestRaftClient,
+    apply_command_server_receiver: Mutex<Option<ServerReceiver<ApplyCommandRequest, ApplyCommandResponse>>>
 
 }
 
 impl RaftTestServerImpl {
 
     pub fn new(server_name: String, server_config: ServerConfig,channel_factory: Arc<RaftTestNetworkChannelFactory>) -> RaftTestServerImpl {
+        let (sender_for_apply_command_req, receiver_for_apply_command_req) = channel();
+        let (sender_for_apply_command_resp, receiver_for_apply_command_resp) = channel();
         RaftTestServerImpl {
             raft_server: Arc::new(RaftServer::new(server_config, channel_factory.get_network_channel(server_name.clone()))),
             server_name,
             channel_factory,
             shutdown:Arc::new(AtomicBool::new(false)),
+            raft_client: TestRaftClient::new(ClientSender::new(sender_for_apply_command_req, receiver_for_apply_command_resp)),
+            apply_command_server_receiver: Mutex::new(Some(ServerReceiver::new(receiver_for_apply_command_req, sender_for_apply_command_resp)))
         }
     }
     pub fn stop(&self) {
@@ -163,6 +169,23 @@ impl RaftTestServerImpl {
                 println!("exit from append_entries thread");
             }));
         }
+        let shutdown_thread=self.shutdown.clone();
+        let raft_server_server_for_thread= self.get_raft_server();
+        let mut server_receiver_guard=self.apply_command_server_receiver.lock().unwrap();
+        let server_receiver = server_receiver_guard.take().unwrap();
+        thread::spawn(move || {
+            while !shutdown_thread.load(Ordering::SeqCst) {
+                let result_request_in = server_receiver.receive_request_from_client();
+
+                if result_request_in.is_ok() {
+                    let request_in = result_request_in.unwrap();
+                    let response = raft_server_server_for_thread.on_apply_command(request_in);
+                    server_receiver.send_response_to_client(response);
+                }
+            }
+            println!("exit from append_entries thread");
+        });
+
         println!("server:{} - before join",&self.server_name);
         for child in children {
             // Wait for the thread to finish. Returns a result.
@@ -293,6 +316,28 @@ impl NetworkChannel for RaftTestNetworkChannel {
     }
 }
 
+struct TestInnerRaftClient {
+    apply_command_channel: ClientSender<ApplyCommandRequest, ApplyCommandResponse>,
+}
+
+struct TestRaftClient {
+    inner_client_mutex: Mutex<TestInnerRaftClient>,
+}
+
+impl TestRaftClient {
+    pub fn new(apply_command_channel: ClientSender<ApplyCommandRequest, ApplyCommandResponse>) -> Self {
+        TestRaftClient { inner_client_mutex: Mutex::new(TestInnerRaftClient {apply_command_channel}) }
+    }
+}
+
+impl RaftClient for TestRaftClient {
+
+    fn apply_command(&self, apply_command_request: ApplyCommandRequest) -> Result<ApplyCommandResponse, ()> {
+        let inner_client=self.inner_client_mutex.lock().unwrap();
+        inner_client.apply_command_channel.send_request_to_server(apply_command_request);
+        Ok(inner_client.apply_command_channel.receive_response_from_server())
+    }
+}
 
 /*
 questo si può mettere anche dentro la impl di una struct

@@ -323,6 +323,7 @@ impl <C:'static + ClientChannel+Send+Sync >RaftServer<C> {
             while !*started {
                 // TODO Rendere parametrizzabile i millisecondi di attesa
                 cond_var.wait_for(&mut started, Duration::from_millis(500));
+                println!("after wait_for propagation for index {}", index);
             }
         }
 
@@ -593,6 +594,7 @@ gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
                             let mut started = lock.lock();
                             *started = true;
                             cvar.notify_one();
+                            println!("notify one for index {}", sent_index);
                         }
                         wait_map.remove(&sent_index);
                     }

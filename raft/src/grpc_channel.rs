@@ -51,7 +51,10 @@ impl RaftRPCServerImpl {
                 raft_server_server_state.manage_server_state();
             }
         });
-        println!(" after raft_server start");
+        println!(" before raft_server start_senders");
+        let raft_server_server_state= raft_rpc_server_impl.get_raft_server();
+        raft_server_server_state.start_senders();
+        println!(" after raft_server start_senders");
         let rt = Runtime::new().expect("failed to obtain a new RunTime object");
         let server_future = Server::builder()
             .add_service(RaftRpcServer::new(raft_rpc_server_impl))
