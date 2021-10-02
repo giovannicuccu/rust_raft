@@ -307,11 +307,13 @@ impl <C:'static + ClientChannel+Send+Sync >RaftServer<C> {
     }
 
     pub fn on_apply_command(&self,append_entries_request: ApplyCommandRequest) -> ApplyCommandResponse {
+        println!("id:{} - on_apply_command start",self.config.id);
         let encoded_command: Vec<u8> = bincode::serialize(&append_entries_request).unwrap();
         //self.persistent_state.current_index+=1;
         let mut log_mutex =self.persistent_state.log.lock();
 
         let result=log_mutex.append_entry(self.persistent_state.current_term, &encoded_command);
+        println!("id:{} - on_apply_command entry persistend on master",self.config.id);
         if result.is_ok() {
             let index=result.unwrap();
             self.persistent_state.current_index.store(index, Ordering::SeqCst);
@@ -321,6 +323,7 @@ impl <C:'static + ClientChannel+Send+Sync >RaftServer<C> {
             let &(ref mutex, ref cond_var) = &*pair;
             let mut started = mutex.lock();
             while !*started {
+                println!("id:{} - on_apply_command wating for remote insertion",self.config.id);
                 // TODO Rendere parametrizzabile i millisecondi di attesa
                 cond_var.wait_for(&mut started, Duration::from_millis(500));
                 println!("after wait_for propagation for index {}", index);

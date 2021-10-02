@@ -1,7 +1,7 @@
 use std::sync::mpsc::{Sender, Receiver, channel, RecvTimeoutError};
 use raft::{ServerConfig, RaftServer, RaftServerState};
 use raft::network::{ClientChannel, NetworkChannel, RaftClient};
-use raft::common::{AppendEntriesResponse, RequestVoteRequest, AppendEntriesRequest, RequestVoteResponse, ApplyCommandRequest, ApplyCommandResponse};
+use raft::common::{AppendEntriesResponse, RequestVoteRequest, AppendEntriesRequest, RequestVoteResponse, ApplyCommandRequest, ApplyCommandResponse, StateMachineCommand};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::{thread, time, env};
@@ -97,7 +97,7 @@ struct RaftTestServerImpl {
     server_name: String,
     channel_factory: Arc<RaftTestNetworkChannelFactory>,
     shutdown: Arc<AtomicBool>,
-    raft_client: TestRaftClient,
+    raft_client: Mutex<Option<TestRaftClient>>,
     apply_command_server_receiver: Mutex<Option<ServerReceiver<ApplyCommandRequest, ApplyCommandResponse>>>
 
 }
@@ -112,7 +112,7 @@ impl RaftTestServerImpl {
             server_name,
             channel_factory,
             shutdown:Arc::new(AtomicBool::new(false)),
-            raft_client: TestRaftClient::new(ClientSender::new(sender_for_apply_command_req, receiver_for_apply_command_resp)),
+            raft_client: Mutex::new(Some(TestRaftClient::new(ClientSender::new(sender_for_apply_command_req, receiver_for_apply_command_resp)))),
             apply_command_server_receiver: Mutex::new(Some(ServerReceiver::new(receiver_for_apply_command_req, sender_for_apply_command_resp)))
         }
     }
@@ -175,15 +175,16 @@ impl RaftTestServerImpl {
         let server_receiver = server_receiver_guard.take().unwrap();
         thread::spawn(move || {
             while !shutdown_thread.load(Ordering::SeqCst) {
-                let result_request_in = server_receiver.receive_request_from_client();
 
+                let result_request_in = server_receiver.receive_request_from_client();
+                println!("got apply command");
                 if result_request_in.is_ok() {
                     let request_in = result_request_in.unwrap();
                     let response = raft_server_server_for_thread.on_apply_command(request_in);
                     server_receiver.send_response_to_client(response);
                 }
             }
-            println!("exit from append_entries thread");
+            println!("exit from apply_command thread");
         });
 
         println!("server:{} - before join",&self.server_name);
@@ -202,6 +203,9 @@ impl RaftTestServerImpl {
     pub fn raft_server_state(&self) -> RaftServerState {
         self.raft_server.server_state()
     }
+
+    fn get_raft_client(&self) -> TestRaftClient {
+        self.raft_client.lock().unwrap().take().unwrap()}
 }
 
 /*
@@ -386,6 +390,67 @@ Se non raccolgo gli handle il programma finisce subito
 
     let sleep_time = time::Duration::from_millis(3000);
     thread::sleep(sleep_time);
+    server1.stop();
+    server2.stop();
+    server3.stop();
+    for child in children {
+        // Wait for the thread to finish. Returns a result.
+        let _ = child.join();
+    }
+    let server_state_list=vec![server1.raft_server_state(),server2.raft_server_state(), server3.raft_server_state()];
+    assert_eq!(server_state_list.iter().filter(|server_state| **server_state==RaftServerState::Follower).count(),2);
+    assert_eq!(server_state_list.iter().filter(|server_state| **server_state==RaftServerState::Leader).count(),1);
+    assert_eq!(server_state_list.iter().filter(|server_state| **server_state==RaftServerState::Candidate).count(),0);
+}
+
+#[test]
+fn testApplyCommandThreeServers() {
+    println!("testApplyCommandThreeServers start");
+    let server_config_1=ServerConfig::new(1,65,100, 9090,vec![String::from("server2"),String::from("server3")],create_test_dir(),create_test_dir());
+    let server_config_2=ServerConfig::new(2,65,100, 9091,vec![String::from("server1"),String::from("server3")],create_test_dir(), create_test_dir());
+    let server_config_3=ServerConfig::new(3,65,100, 9092,vec![String::from("server1"),String::from("server2")],create_test_dir(), create_test_dir());
+
+    let mut children = vec![];
+
+    /*
+Se non raccolgo gli handle il programma finisce subito
+ */
+    let channel_factory=Arc::new(RaftTestNetworkChannelFactory::new(vec![String::from("server1"),String::from("server2"),String::from("server3")]));
+    println!("before starting servers");
+    let mut server1=Arc::new(RaftTestServerImpl::new(String::from("server1"),server_config_1,channel_factory.clone()));
+    let server1_thread=server1.clone();
+    children.push(thread::spawn(move || {
+        println!("inside starting server 1");
+        server1_thread.start();
+    }));
+    let mut server2=Arc::new(RaftTestServerImpl::new(String::from("server2"),server_config_2,channel_factory.clone()));
+    let server2_thread=server2.clone();
+    children.push(thread::spawn(move || {
+        server2_thread.start();
+    }));
+    let mut server3=Arc::new(RaftTestServerImpl::new(String::from("server3"),server_config_3,channel_factory.clone()));
+    let server3_thread=server3.clone();
+    children.push(thread::spawn(move || {
+        server3_thread.start();
+    }));
+
+    let sleep_time = time::Duration::from_millis(3000);
+    thread::sleep(sleep_time);
+    let mut client=None;
+    if server1.raft_server_state()==RaftServerState::Leader {
+        let c=server1.get_raft_client();
+        client=Some(c);
+    } else if server2.raft_server_state()==RaftServerState::Leader {
+        let c=server2.get_raft_client();
+        client=Some(c);
+    } else if server3.raft_server_state()==RaftServerState::Leader {
+        let c=server3.get_raft_client();
+        client=Some(c);
+    }
+    if client.is_some() {
+        let apply_command_request=ApplyCommandRequest::new(StateMachineCommand::Put { key: "key".to_string(), value: "value".to_string() });
+        client.take().unwrap().apply_command(apply_command_request);
+    }
     server1.stop();
     server2.stop();
     server3.stop();
