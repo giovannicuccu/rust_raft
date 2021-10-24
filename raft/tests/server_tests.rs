@@ -3,13 +3,17 @@ use raft::{ServerConfig, RaftServer, RaftServerState};
 use raft::network::{ClientChannel, NetworkChannel, RaftClient};
 use raft::common::{AppendEntriesResponse, RequestVoteRequest, AppendEntriesRequest, RequestVoteResponse, ApplyCommandRequest, ApplyCommandResponse, StateMachineCommand};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc};
+
 use std::{thread, time, env};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::time::Sleep;
 use std::time::Duration;
 use rand::Rng;
 use std::fs::create_dir;
+use log::{debug, info, warn};
+use log4rs;
+use parking_lot::Mutex;
 
 
 struct ClientSender<SReq,SResp> {
@@ -80,13 +84,14 @@ impl TestClientChannel {
 impl ClientChannel for TestClientChannel {
 
     fn send_request_vote(&self, request_vote_request: RequestVoteRequest) -> Result<RequestVoteResponse, ()> {
-        let inner_client=self.inner_client_mutex.lock().unwrap();
+        let inner_client=self.inner_client_mutex.lock();
         inner_client.request_vote_channel.send_request_to_server(request_vote_request);
         Ok(inner_client.request_vote_channel.receive_response_from_server())
     }
 
     fn send_append_entries(&self, append_entries_request: AppendEntriesRequest) -> Result<AppendEntriesResponse, ()> {
-        let inner_client=self.inner_client_mutex.lock().unwrap();
+        debug!("send append entries client_mutex_locked {}", self.inner_client_mutex.is_locked());
+        let inner_client=self.inner_client_mutex.lock();
         inner_client.append_entries_channel.send_request_to_server(append_entries_request);
         Ok(inner_client.append_entries_channel.receive_response_from_server())
     }
@@ -171,14 +176,15 @@ impl RaftTestServerImpl {
         }
         let shutdown_thread=self.shutdown.clone();
         let raft_server_server_for_thread= self.get_raft_server();
-        let mut server_receiver_guard=self.apply_command_server_receiver.lock().unwrap();
+        let mut server_receiver_guard=self.apply_command_server_receiver.lock();
         let server_receiver = server_receiver_guard.take().unwrap();
         thread::spawn(move || {
             while !shutdown_thread.load(Ordering::SeqCst) {
 
                 let result_request_in = server_receiver.receive_request_from_client();
-                println!("got apply command");
+
                 if result_request_in.is_ok() {
+                    println!("got apply command");
                     let request_in = result_request_in.unwrap();
                     let response = raft_server_server_for_thread.on_apply_command(request_in);
                     server_receiver.send_response_to_client(response);
@@ -205,7 +211,7 @@ impl RaftTestServerImpl {
     }
 
     fn get_raft_client(&self) -> TestRaftClient {
-        self.raft_client.lock().unwrap().take().unwrap()}
+        self.raft_client.lock().take().unwrap()}
 }
 
 /*
@@ -232,9 +238,9 @@ se non metto niente viene rilasciato a fine metodo
         /*
         TODO spiegare perchè qui va qui unwrap al posto delle righe 142 e successive
          */
-            let mut local_client_map = local_client_map_mutex.lock().unwrap();
-            let mut local_server_map_for_append_entries = local_server_map_for_append_entries_mutex.lock().unwrap();
-            let mut local_server_map_for_send_request_vote = local_server_map_for_send_request_vote_mutex.lock().unwrap();
+            let mut local_client_map = local_client_map_mutex.lock();
+            let mut local_server_map_for_append_entries = local_server_map_for_append_entries_mutex.lock();
+            let mut local_server_map_for_send_request_vote = local_server_map_for_send_request_vote_mutex.lock();
             /*
         TODO spiegare perchè qui va &server_address_list al posto di server_address_list
          */
@@ -278,19 +284,19 @@ se non metto niente viene rilasciato a fine metodo
     }
 
     pub fn get_network_channel(&self, server_address: String) -> RaftTestNetworkChannel {
-        let mut local_client_map=self.client_map_mutex.lock().unwrap();
+        let mut local_client_map=self.client_map_mutex.lock();
         RaftTestNetworkChannel::new(local_client_map.remove(&server_address).unwrap())
     }
 
     pub fn get_server_channels_for_request_vote(&self, server_address: &String) -> Vec<ServerReceiver<RequestVoteRequest, RequestVoteResponse>> {
         println!("get_server_channels_for_request_vote for {}", server_address);
-        let mut local_server_map_for_send_request_vote=self.server_map_for_send_request_vote.lock().unwrap();
+        let mut local_server_map_for_send_request_vote=self.server_map_for_send_request_vote.lock();
         local_server_map_for_send_request_vote.remove(server_address).unwrap()
     }
 
     pub fn get_server_channels_for_append_log_entries(&self, server_address: &String) -> Vec<ServerReceiver<AppendEntriesRequest, AppendEntriesResponse>> {
         println!("get_server_channels_for_append_log_entries for {}", server_address);
-        let mut local_server_map_for_append_entries=self.server_map_for_append_entries.lock().unwrap();
+        let mut local_server_map_for_append_entries=self.server_map_for_append_entries.lock();
         local_server_map_for_append_entries.remove(server_address).unwrap()
     }
 }
@@ -311,7 +317,7 @@ impl NetworkChannel for RaftTestNetworkChannel {
     type Client = TestClientChannel;
 
     fn client_channel(&self, remote_address: String) -> Self::Client {
-        let mut client_map=self.client_map_mutex.lock().unwrap();
+        let mut client_map=self.client_map_mutex.lock();
         if let Some(client) = client_map.remove(&*remote_address) {
             return client;
         } else {
@@ -337,7 +343,7 @@ impl TestRaftClient {
 impl RaftClient for TestRaftClient {
 
     fn apply_command(&self, apply_command_request: ApplyCommandRequest) -> Result<ApplyCommandResponse, ()> {
-        let inner_client=self.inner_client_mutex.lock().unwrap();
+        let inner_client=self.inner_client_mutex.lock();
         inner_client.apply_command_channel.send_request_to_server(apply_command_request);
         Ok(inner_client.apply_command_channel.receive_response_from_server())
     }
@@ -405,7 +411,9 @@ Se non raccolgo gli handle il programma finisce subito
 
 #[test]
 fn testApplyCommandThreeServers() {
-    println!("testApplyCommandThreeServers start");
+    log4rs::init_file("log4rs.yml", Default::default()).unwrap();
+    info!("booting up");
+    debug!("testApplyCommandThreeServers start");
     let server_config_1=ServerConfig::new(1,65,100, 9090,vec![String::from("server2"),String::from("server3")],create_test_dir(),create_test_dir());
     let server_config_2=ServerConfig::new(2,65,100, 9091,vec![String::from("server1"),String::from("server3")],create_test_dir(), create_test_dir());
     let server_config_3=ServerConfig::new(3,65,100, 9092,vec![String::from("server1"),String::from("server2")],create_test_dir(), create_test_dir());
@@ -416,11 +424,11 @@ fn testApplyCommandThreeServers() {
 Se non raccolgo gli handle il programma finisce subito
  */
     let channel_factory=Arc::new(RaftTestNetworkChannelFactory::new(vec![String::from("server1"),String::from("server2"),String::from("server3")]));
-    println!("before starting servers");
+    debug!("before starting servers");
     let mut server1=Arc::new(RaftTestServerImpl::new(String::from("server1"),server_config_1,channel_factory.clone()));
     let server1_thread=server1.clone();
     children.push(thread::spawn(move || {
-        println!("inside starting server 1");
+        debug!("inside starting server 1");
         server1_thread.start();
     }));
     let mut server2=Arc::new(RaftTestServerImpl::new(String::from("server2"),server_config_2,channel_factory.clone()));
@@ -434,8 +442,10 @@ Se non raccolgo gli handle il programma finisce subito
         server3_thread.start();
     }));
 
+    debug!("before sleep");
     let sleep_time = time::Duration::from_millis(3000);
     thread::sleep(sleep_time);
+    debug!("after sleep");
     let mut client=None;
     if server1.raft_server_state()==RaftServerState::Leader {
         let c=server1.get_raft_client();
@@ -449,7 +459,10 @@ Se non raccolgo gli handle il programma finisce subito
     }
     if client.is_some() {
         let apply_command_request=ApplyCommandRequest::new(StateMachineCommand::Put { key: "key".to_string(), value: "value".to_string() });
+        debug!("Before sending apply command");
         client.take().unwrap().apply_command(apply_command_request);
+    } else {
+        debug!("no Leader found")
     }
     server1.stop();
     server2.stop();
@@ -462,6 +475,11 @@ Se non raccolgo gli handle il programma finisce subito
     assert_eq!(server_state_list.iter().filter(|server_state| **server_state==RaftServerState::Follower).count(),2);
     assert_eq!(server_state_list.iter().filter(|server_state| **server_state==RaftServerState::Leader).count(),1);
     assert_eq!(server_state_list.iter().filter(|server_state| **server_state==RaftServerState::Candidate).count(),0);
+}
+
+#[test]
+fn testSimple() {
+    println!("testSimple start");
 }
 
 #[test]

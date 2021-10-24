@@ -108,7 +108,7 @@ impl WriteAheadLog {
         let blocks_read=log_reader.blocks_read;
         println!("wal_read buf_len {}",log_reader.current_buffer_len());
         let offset_in_block=(BLOCK_SIZE - log_reader.current_buffer_len() as u16) as usize;
-        println!("blocks_read={} offset in block={}, buf_len={}", blocks_read, offset_in_block,log_reader.current_buffer_len());
+        //println!("blocks_read={} offset in block={}, buf_len={}", blocks_read, offset_in_block,log_reader.current_buffer_len());
 
 
         let mut file = OpenOptions::new().read(true).write(true).open(PathBuf::from(path))?;
@@ -163,7 +163,7 @@ impl WriteAheadLog {
         self.current_index+=1;
         if self.current_block.len()+(HEADER_SIZE as usize) <= (BLOCK_SIZE as usize) {
             if self.current_block.len()+(HEADER_SIZE as usize)+entry_data.len()<= (BLOCK_SIZE as usize) {
-                println!("writing record<block_size");
+                //println!("writing record<block_size");
                 self.append_record(FULL, term, self.current_index,  entry_data)?;
             } else {
                 let available_buffer_len=(BLOCK_SIZE as usize)-self.current_block.len()-(HEADER_SIZE as usize);
@@ -232,11 +232,11 @@ impl WriteAheadLog {
 
         self.current_block.clear();
         let mut buffer = vec![0u8; offset_in_block];
-        println!("buffer_size={}",offset_in_block);
+        //println!("buffer_size={}",offset_in_block);
         file.read_exact(&mut *buffer)?;
         self.current_block.append(&mut buffer);
         file.set_len(new_file_size)?;
-        println!("new_file_size={}",new_file_size);
+        //println!("new_file_size={}",new_file_size);
         file.seek(SeekFrom::Start(new_file_size));
         self.writer = file;
         Ok(())
@@ -246,7 +246,7 @@ impl WriteAheadLog {
         if self.current_block.len()>0 {
             let mut padded_with_zero=false;
             let non_padded_len=self.current_block.len();
-            println!("non_padded_len={}",non_padded_len);
+            //println!("non_padded_len={}",non_padded_len);
             if self.current_block.len()< BLOCK_SIZE as usize {
                 padded_with_zero=true;
                 self.current_block.resize(BLOCK_SIZE as usize, 0);
@@ -314,18 +314,18 @@ impl RecordEntryIterator {
         let file_metadata = metadata(path.clone());
         let mut blocks_to_read= (file_metadata.unwrap().len()/BLOCK_SIZE as u64) as u32;
         let file_metadata = metadata(path);
-        println!("file_size {}", file_metadata.unwrap().len());
+        //println!("file_size {}", file_metadata.unwrap().len());
         if flushed_partial_block {
-            println!("flushed_partial_block true");
+            //println!("flushed_partial_block true");
             blocks_to_read=blocks_to_read-1;
         }
-        println!("blocks to read {}", blocks_to_read);
+        //println!("blocks to read {}", blocks_to_read);
         Ok(RecordEntryIterator { reader: file, current_buffer:vec![], blocks_to_read , blocks_read: 0,in_memory_fragment,reading_in_memory:false  })
     }
 }
 
 fn read_from_vec(vec: &mut Vec<u8>)-> Option<RecordEntry> {
-    println!("vec.len()={}",vec.len());
+    //println!("vec.len()={}",vec.len());
     if vec.len() >= HEADER_SIZE as usize {
         let slice = &vec[0..HEADER_SIZE as usize];
         let mut contains_entry = false;
@@ -351,7 +351,7 @@ fn read_from_vec(vec: &mut Vec<u8>)-> Option<RecordEntry> {
             println!("next_record crc err  crc={}, calculated_crc={} size={},entry_type={},index={}", crc, calculated_crc, size, entry_type, index);
         }
         return if crc == calculated_crc {
-            println!("read_from_vec return some");
+            //println!("read_from_vec return some");
             Some(RecordEntry {
                 crc,
                 size,
@@ -420,24 +420,24 @@ impl RecordEntryIterator {
                 } else {
                     let mut new_buffer = [0; BLOCK_SIZE as usize];
                     if self.reader.read_exact(&mut new_buffer).is_err() {
-                        println!("next_record is err first_read");
+                        //println!("next_record is err first_read");
                         if self.in_memory_fragment.len() > 0 {
                             self.reading_in_memory = true;
                         } else {
                             return None;
                         }
                     } else {
-                        println!("read exact ok");
+                        //println!("read exact ok");
                         self.blocks_read += 1;
                         self.current_buffer = Vec::from(new_buffer);
                     }
                 }
             }
             if self.reading_in_memory {
-                println!("reading from memory");
+                //println!("reading from memory");
                 return read_from_vec(&mut self.in_memory_fragment);
             }
-            println!("reading from current buffer");
+            //println!("reading from current buffer");
             return read_from_vec(&mut self.current_buffer);
             /*return if opt_entry.is_none() {
                 if self.in_memory_fragment.len() > 0 {
@@ -479,7 +479,7 @@ impl Iterator for RecordEntryIterator {
         let mut expect_middle_or_last=false;
         while let Some(mut actual_record) = self.next_record() {
                 log_value.append(&mut actual_record.value);
-                println!("actual_record.entry_type {} ",actual_record.entry_type);
+                //println!("actual_record.entry_type {} ",actual_record.entry_type);
                 if actual_record.entry_type==FULL {
                     return if expect_first_or_full {
                         Some(WriteAheadLogEntry{ index: actual_record.index, term:actual_record.term, data:log_value})
@@ -512,7 +512,7 @@ impl Iterator for RecordEntryIterator {
                    }
                }
             }
-        println!("next_record none ");
+        //println!("next_record none ");
         None
     }
 }

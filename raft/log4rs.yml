@@ -1,0 +1,22 @@
+refresh_rate: 30 seconds
+appenders:
+  stdout:
+    kind: console
+  file:
+    kind: file
+    path: "../target/log/requests.log"
+    append: false
+    encoder:
+      pattern: "{d:<35.35} - {M} - {m}{n}"
+root:
+  level: debug
+  appenders:
+    - file
+loggers:
+  sled:
+    level: warn
+#  app::requests:
+#    level: info
+#    appenders:
+#      - requests
+#    additive: false
