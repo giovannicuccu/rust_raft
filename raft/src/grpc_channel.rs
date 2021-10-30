@@ -321,6 +321,9 @@ impl RaftRPCClientImpl {
 }
 
 impl ClientChannel for RaftRPCClientImpl {
+    fn get_destination(&self) -> String {
+        self.address.clone()
+    }
 
     fn send_request_vote(&self, request_vote_request: RequestVoteRequest) -> Result<RequestVoteResponse,()> {
         let rt = tokio::runtime::Runtime::new().unwrap();

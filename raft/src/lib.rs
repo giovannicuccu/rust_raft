@@ -400,9 +400,9 @@ impl <C:'static + ClientChannel+Send+Sync >RaftServer<C> {
             match server_state_cloned {
                 ServerState::Follower => {
                     let mutex_volatile_state_guard = self.volatile_state.lock();
-                    debug!("id:{} - manage_server_state ServerState::Follower last heartbit  {} ms ago",self.config.id,now.duration_since(mutex_volatile_state_guard.last_heartbeat_time).as_millis());
+                    debug!("id:{} - manage_server_state ServerState::Follower last heartbit  {} ms ago",self.config.id,now.saturating_duration_since(mutex_volatile_state_guard.last_heartbeat_time).as_millis());
                     let election_timeout: u32 = rng.gen_range(self.config.election_timeout_min..=self.config.election_timeout_max);
-                    if now.duration_since(mutex_volatile_state_guard.last_heartbeat_time).as_millis() >= election_timeout as u128 {
+                    if now.saturating_duration_since(mutex_volatile_state_guard.last_heartbeat_time).as_millis() >= election_timeout as u128 {
                         //il timeout è random fra due range da definire--
                         //Avviare la richiesta di voto
                         let mut mutex_guard = self.server_state.lock();
@@ -480,6 +480,7 @@ impl <C:'static + ClientChannel+Send+Sync >RaftServer<C> {
                     let th_wait_map=Arc::clone(&self.wait_map);
                     let th_volatile_state=Arc::clone(&self.volatile_state);
                     let th_clients_for_servers_in_cluster=Arc::clone(&self.clients_for_servers_in_cluster);
+                    debug!("{} spawn thread for destination {}",self.config.id, th_clients_for_servers_in_cluster.get(i).unwrap().get_destination());
                     thread::spawn(move || {
                         loop {
 
@@ -531,7 +532,7 @@ gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
         ok_votes.load(Ordering::SeqCst)>= ((self.config.other_nodes_in_cluster.len() / 2)+1) as isize
     }
 
-    fn send_append_entries(&self)-> bool {
+/*    fn send_append_entries(&self)-> bool {
         let now = Utc::now();
         debug!("id:{} - send_append_entries at {}",self.config.id, now.timestamp_millis());
         let ok_votes=AtomicIsize::new(0);
@@ -558,7 +559,7 @@ gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
         });
         debug!("id:{} - send_append_entries result={}",self.config.id, ok_votes.load(Ordering::SeqCst)>= ((self.config.other_nodes_in_cluster.len() / 2)+1) as isize);
         ok_votes.load(Ordering::SeqCst)>= ((self.config.other_nodes_in_cluster.len() / 2)+1) as isize
-    }
+    }*/
 
     pub fn server_state(&self) ->RaftServerState {
         let server_state=self.server_state.lock();
@@ -581,7 +582,8 @@ gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
     fn send_append_entries_to_remote(index:usize, persistent_state: &ServerPersistentState, leader_state: &Mutex<LeaderState>,
                                      config: &ServerConfig, wait_map: &Mutex<HashMap<IndexType,Arc<(Mutex<bool>, Condvar)>>>,
                                      volatile_state: &Mutex<ServerVolatileState>, clients_for_servers_in_cluster: &Vec<C>) {
-        debug!("id:{} - send_append_entries to {} start",config.id,index);
+        let destination=clients_for_servers_in_cluster.get(index).unwrap().get_destination();
+        debug!("id:{} - send_append_entries to {} start",config.id,destination);
         //TODO pensare se non ci sia un pattern per liberare le risorse senza usare option
         let mut log =persistent_state.log.lock();
         let mut log_reader = log.record_entry_iterator().unwrap();
@@ -591,7 +593,7 @@ gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
         let log_index=&leader_state_mg.next_index[index];
         let last_log_index=log_index.load(Ordering::Relaxed);
         //TODO sistemare questo calcolo con un valore che eviti una nuova elezione
-        let force_send=Instant::now().duration_since(leader_state_mg.last_heartbeat_time).as_millis() >= (config.election_timeout_min-10) as u128;
+        let force_send=Instant::now().saturating_duration_since(leader_state_mg.last_heartbeat_time).as_millis() >= (config.election_timeout_min-10) as u128;
         drop(leader_state_mg);
 
 
@@ -603,9 +605,9 @@ gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
 
 
         if !force_send {
-            debug!("id:{} - send_append_entries_to_remote last_log_index={} current_index= {} start", config.id, last_log_index,persistent_state.current_index.load(Ordering::Relaxed));
+            debug!("id:{} - send_append_entries_to_remote {} last_log_index={} current_index= {} start", config.id,destination, last_log_index,persistent_state.current_index.load(Ordering::Relaxed));
         } else {
-            debug! ("id:{} - force_send true sending empty request", config.id)
+            debug! ("id:{} - force_send true sending empty request to {}", config.id,destination );
         }
         let mut log_entries =vec![];
         let mut last_log_index_sent = last_log_index;
@@ -636,7 +638,7 @@ gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
         let append_entries_response=client_channel.send_append_entries(append_entries_request);
         if append_entries_response.is_ok() {
             if append_entries_response.ok().unwrap().success() {
-                debug!("id:{} - send_append_entries response succeded", config.id);
+                debug!("id:{} - send_append_entries to {} succeded", config.id, destination);
                 if !force_send {
                     let leader_state_mg=leader_state.lock();
                     let match_index=&leader_state_mg.match_index[index];

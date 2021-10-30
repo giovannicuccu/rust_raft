@@ -65,6 +65,7 @@ impl <SReq,SResp> ServerReceiver<SReq, SResp> {
 
 
 struct TestInnerClientChannel {
+    destination: String,
     request_vote_channel:ClientSender<RequestVoteRequest, RequestVoteResponse>,
     append_entries_channel:ClientSender<AppendEntriesRequest, AppendEntriesResponse>,
 }
@@ -75,13 +76,17 @@ struct TestClientChannel {
 }
 
 impl TestClientChannel {
-    pub fn new(request_vote_channel: ClientSender<RequestVoteRequest, RequestVoteResponse>,
+    pub fn new(destination: String, request_vote_channel: ClientSender<RequestVoteRequest, RequestVoteResponse>,
                append_entries_channel:ClientSender<AppendEntriesRequest, AppendEntriesResponse>) -> Self {
-        TestClientChannel { inner_client_mutex: Mutex::new(TestInnerClientChannel {request_vote_channel,  append_entries_channel}) }
+        TestClientChannel { inner_client_mutex: Mutex::new(TestInnerClientChannel { destination: destination.clone(), request_vote_channel,  append_entries_channel}) }
     }
 }
 
 impl ClientChannel for TestClientChannel {
+    fn get_destination(&self) -> String {
+        let inner_client=self.inner_client_mutex.lock();
+        inner_client.destination.clone()
+    }
 
     fn send_request_vote(&self, request_vote_request: RequestVoteRequest) -> Result<RequestVoteResponse, ()> {
         let inner_client=self.inner_client_mutex.lock();
@@ -112,6 +117,7 @@ impl RaftTestServerImpl {
     pub fn new(server_name: String, server_config: ServerConfig,channel_factory: Arc<RaftTestNetworkChannelFactory>) -> RaftTestServerImpl {
         let (sender_for_apply_command_req, receiver_for_apply_command_req) = channel();
         let (sender_for_apply_command_resp, receiver_for_apply_command_resp) = channel();
+        debug!("Server name={}, id={}", server_name, server_config.id());
         RaftTestServerImpl {
             raft_server: Arc::new(RaftServer::new(server_config, channel_factory.get_network_channel(server_name.clone()))),
             server_name,
@@ -246,11 +252,11 @@ se non metto niente viene rilasciato a fine metodo
          */
             for server_address_from in &server_address_list {
                 //let mut local_client_map_for_server = HashMap::new();
-                let mut server_receiver_for_append_log_entries_list = vec![];
-                let mut server_receiver_for_request_vote_list = vec![];
+
+
                 for server_address_to in &server_address_list {
                     if server_address_from != server_address_to {
-                        println!("creating channel for {} -> {}", server_address_from, server_address_to);
+                        debug!("creating channel for {} -> {}", server_address_from, server_address_to);
                         let (sender_for_request_vote_req, receiver_for_request_vote_req) = channel();
                         let (sender_for_request_vote_resp, receiver_for_request_vote_resp) = channel();
                         let (sender_for_append_log_entries_req, receiver_for_append_log_entries_req) = channel();
@@ -259,21 +265,35 @@ se non metto niente viene rilasciato a fine metodo
                         let server_receiver_for_request_vote = ServerReceiver::new(receiver_for_request_vote_req, sender_for_request_vote_resp);
                         let client_sender_for_append_log_entries = ClientSender::new(sender_for_append_log_entries_req, receiver_for_append_log_entries_resp);
                         let server_receiver_for_append_log_entries = ServerReceiver::new(receiver_for_append_log_entries_req, sender_for_append_log_entries_resp);
-                        let client_channel = TestClientChannel::new(client_sender_for_request_vote, client_sender_for_append_log_entries);
-                        if local_client_map.contains_key(&server_address_to.clone()) {
-                            let mut local_client_map_for_server = local_client_map.get_mut(&server_address_to.clone()).unwrap();
-                            local_client_map_for_server.insert(server_address_from.clone(), client_channel);
+                        let client_channel = TestClientChannel::new(server_address_to.clone(), client_sender_for_request_vote, client_sender_for_append_log_entries);
+                        if local_client_map.contains_key(&server_address_from.clone()) {
+                            let mut local_client_map_for_server = local_client_map.get_mut(&server_address_from.clone()).unwrap();
+                            local_client_map_for_server.insert(server_address_to.clone(), client_channel);
                         } else {
                             let mut local_client_map_for_server = HashMap::new();
-                            local_client_map_for_server.insert(server_address_from.clone(), client_channel);
-                            local_client_map.insert(server_address_to.clone(), local_client_map_for_server);
+                            local_client_map_for_server.insert(server_address_to.clone(), client_channel);
+                            local_client_map.insert(server_address_from.clone(), local_client_map_for_server);
                         }
-                        server_receiver_for_append_log_entries_list.push(server_receiver_for_append_log_entries);
-                        server_receiver_for_request_vote_list.push(server_receiver_for_request_vote);
+
+                        if local_server_map_for_append_entries.contains_key(&server_address_to.clone()) {
+                            let mut server_receiver_for_append_log_entries_list:&mut Vec<ServerReceiver<AppendEntriesRequest,AppendEntriesResponse>> = local_server_map_for_append_entries.get_mut(&server_address_to.clone()).unwrap();
+                            server_receiver_for_append_log_entries_list.push(server_receiver_for_append_log_entries);
+                        } else {
+                            let mut server_receiver_for_append_log_entries_list = vec![];
+                            server_receiver_for_append_log_entries_list.push(server_receiver_for_append_log_entries);
+                            local_server_map_for_append_entries.insert(server_address_to.clone(), server_receiver_for_append_log_entries_list);
+                        }
+
+                        if local_server_map_for_send_request_vote.contains_key(&server_address_to.clone()) {
+                            let mut server_receiver_for_request_vote_list:&mut Vec<ServerReceiver<RequestVoteRequest,RequestVoteResponse>> = local_server_map_for_send_request_vote.get_mut(&server_address_to.clone()).unwrap();
+                            server_receiver_for_request_vote_list.push(server_receiver_for_request_vote);
+                        } else {
+                            let mut server_receiver_for_request_vote_list = vec![];
+                            server_receiver_for_request_vote_list.push(server_receiver_for_request_vote);
+                            local_server_map_for_send_request_vote.insert(server_address_to.clone(), server_receiver_for_request_vote_list);
+                        }
                     }
                 }
-                local_server_map_for_append_entries.insert(server_address_from.clone(), server_receiver_for_append_log_entries_list);
-                local_server_map_for_send_request_vote.insert(server_address_from.clone(), server_receiver_for_request_vote_list);
             }
         }
         RaftTestNetworkChannelFactory {

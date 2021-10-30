@@ -13,6 +13,7 @@ pub trait ServerChannel {
 }
 
 pub trait ClientChannel {
+    fn get_destination(&self) -> String;
     fn send_request_vote(&self, request_vote_request: RequestVoteRequest)-> Result<RequestVoteResponse,()>;
     fn send_append_entries(&self, append_entries_request: AppendEntriesRequest)-> Result<AppendEntriesResponse,()>;
 }
