@@ -318,7 +318,19 @@ impl <C:'static + ClientChannel+Send+Sync >RaftServer<C> {
                     volatile_state.commit_index = min(append_entries_request.leader_commit(), append_entries_request.entries().last().unwrap().index());
                 }
             } else {
-                debug!("id:{} - on_append_entries no prev index {}",self.config.id, append_entries_request.prev_log_index());
+                if append_entries_request.prev_log_index()==0 {
+                    debug!("id:{} - on_append_entries first write ",self.config.id);
+                    for entry in append_entries_request.entries() {
+                        let encoded_command: Vec<u8> = bincode::serialize(entry.state_machine_command()).unwrap();
+                        log.append_entry(append_entries_request.term(), &encoded_command);
+                    }
+                    let mut volatile_state = self.volatile_state.lock();
+                    if append_entries_request.entries().len() > 0 {
+                        volatile_state.commit_index = min(append_entries_request.leader_commit(), append_entries_request.entries().last().unwrap().index());
+                    }
+                } else {
+                    debug!("id:{} - on_append_entries no prev index {}",self.config.id, append_entries_request.prev_log_index());
+                }
             }
         }
         let mut mutex_volatile_state_guard = self.volatile_state.lock();
@@ -595,17 +607,21 @@ gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
         let last_log_index=log_index.load(Ordering::Relaxed);
         //TODO sistemare questo calcolo con un valore che eviti una nuova elezione
         let elapsed=Instant::now().saturating_duration_since(leader_state_mg.last_heartbeat_time).as_millis();
-        let force_send=elapsed==0 || elapsed >= (config.election_timeout_min-20) as u128;
+        let mut force_send=elapsed==0 || elapsed >= (config.election_timeout_min-20) as u128;
         drop(leader_state_mg);
 
+        let something_to_send=last_log_index<persistent_state.current_index.load(Ordering::Relaxed);
 
-        if last_log_index==persistent_state.current_index.load(Ordering::Relaxed) && !force_send {
+        if !something_to_send && !force_send {
             debug!("id:{} - send_append_entries_to_remote to {} elapsed={}", config.id, destination, elapsed);
             debug!("id:{} - send_append_entries_to_remote to {} last_log_index={} current_index= {} sleeping", config.id, destination, last_log_index,persistent_state.current_index.load(Ordering::Relaxed));
             thread::sleep(time::Duration::from_millis(20 as u64));
             return;
         }
 
+        if something_to_send {
+            force_send=false;
+        }
 
         if !force_send {
             debug!("id:{} - send_append_entries_to_remote {} last_log_index={} current_index= {} start", config.id,destination, last_log_index,persistent_state.current_index.load(Ordering::Relaxed));
