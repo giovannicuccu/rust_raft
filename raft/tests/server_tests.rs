@@ -138,7 +138,7 @@ impl RaftTestServerImpl {
         let raft_server_server_state= self.get_raft_server();
         println!("server:{} - before manage_server_state",self.server_name);
         let shutdown_server_state_thread=self.shutdown.clone();
-        thread::spawn(move || {
+        thread::Builder::new().name("manage server state".to_string()).spawn(move || {
             while !shutdown_server_state_thread.load(Ordering::SeqCst) {
                 raft_server_server_state.manage_server_state();
             }

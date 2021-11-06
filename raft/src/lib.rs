@@ -334,6 +334,7 @@ impl <C:'static + ClientChannel+Send+Sync >RaftServer<C> {
         let mut log_mutex =self.persistent_state.log.lock();
 
         let result=log_mutex.append_entry(self.persistent_state.current_term, &encoded_command);
+        drop(log_mutex);
         debug!("id:{} - on_apply_command entry persistend on master",self.config.id);
         if result.is_ok() {
             let index=result.unwrap();
@@ -481,7 +482,7 @@ impl <C:'static + ClientChannel+Send+Sync >RaftServer<C> {
                     let th_volatile_state=Arc::clone(&self.volatile_state);
                     let th_clients_for_servers_in_cluster=Arc::clone(&self.clients_for_servers_in_cluster);
                     debug!("{} spawn thread for destination {}",self.config.id, th_clients_for_servers_in_cluster.get(i).unwrap().get_destination());
-                    thread::spawn(move || {
+                    thread::Builder::new().name(format!("Sender to {}", i).to_string()).spawn(move || {
                         loop {
 
                             RaftServer::send_append_entries_to_remote(i, &th_persistent_state,
@@ -583,7 +584,7 @@ gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
                                      config: &ServerConfig, wait_map: &Mutex<HashMap<IndexType,Arc<(Mutex<bool>, Condvar)>>>,
                                      volatile_state: &Mutex<ServerVolatileState>, clients_for_servers_in_cluster: &Vec<C>) {
         let destination=clients_for_servers_in_cluster.get(index).unwrap().get_destination();
-        debug!("id:{} - send_append_entries to {} start",config.id,destination);
+        debug!("id:{} - send_append_entries_to_remote to {} start",config.id,destination);
         //TODO pensare se non ci sia un pattern per liberare le risorse senza usare option
         let mut log =persistent_state.log.lock();
         let mut log_reader = log.record_entry_iterator().unwrap();
@@ -593,13 +594,15 @@ gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
         let log_index=&leader_state_mg.next_index[index];
         let last_log_index=log_index.load(Ordering::Relaxed);
         //TODO sistemare questo calcolo con un valore che eviti una nuova elezione
-        let force_send=Instant::now().saturating_duration_since(leader_state_mg.last_heartbeat_time).as_millis() >= (config.election_timeout_min-10) as u128;
+        let elapsed=Instant::now().saturating_duration_since(leader_state_mg.last_heartbeat_time).as_millis();
+        let force_send=elapsed==0 || elapsed >= (config.election_timeout_min-20) as u128;
         drop(leader_state_mg);
 
 
         if last_log_index==persistent_state.current_index.load(Ordering::Relaxed) && !force_send {
-            debug!("id:{} - send_append_entries last_log_index={} current_index= {}", config.id, last_log_index,persistent_state.current_index.load(Ordering::Relaxed));
-            thread::sleep(time::Duration::from_millis(50 as u64));
+            debug!("id:{} - send_append_entries_to_remote to {} elapsed={}", config.id, destination, elapsed);
+            debug!("id:{} - send_append_entries_to_remote to {} last_log_index={} current_index= {} sleeping", config.id, destination, last_log_index,persistent_state.current_index.load(Ordering::Relaxed));
+            thread::sleep(time::Duration::from_millis(20 as u64));
             return;
         }
 
@@ -607,7 +610,7 @@ gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
         if !force_send {
             debug!("id:{} - send_append_entries_to_remote {} last_log_index={} current_index= {} start", config.id,destination, last_log_index,persistent_state.current_index.load(Ordering::Relaxed));
         } else {
-            debug! ("id:{} - force_send true sending empty request to {}", config.id,destination );
+            debug! ("id:{} - send_append_entries_to_remote force_send=true sending empty request to {}", config.id,destination );
         }
         let mut log_entries =vec![];
         let mut last_log_index_sent = last_log_index;
@@ -635,6 +638,7 @@ gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
                                   config.id(),last_log_index, 1,
                                   log_entries,mutex_volatile_state_guard.commit_index);
         let client_channel=&clients_for_servers_in_cluster[index];
+        drop(mutex_volatile_state_guard);
         let append_entries_response=client_channel.send_append_entries(append_entries_request);
         if append_entries_response.is_ok() {
             if append_entries_response.ok().unwrap().success() {
@@ -673,6 +677,7 @@ gestire forse non con NO_LOG_ENTRY ma con i singoli valori di default
         } else {
             debug!("id:{} - send_append_entries response ko",config.id);
         }
+        debug!("id:{} - send_append_entries_to_remote to {} end",config.id,destination);
     }
 
 }

@@ -7,7 +7,7 @@ appenders:
     path: "../target/log/requests.log"
     append: false
     encoder:
-      pattern: "{d:<35.35} - {M} - {m}{n}"
+      pattern: "{d:<35.35} - {M} - {T:<20.20} - {m}{n}"
 root:
   level: debug
   appenders:
