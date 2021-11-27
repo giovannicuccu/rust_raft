@@ -366,14 +366,16 @@ impl <C:'static + ClientChannel+Send+Sync >RaftServer<C> {
             let wait_result=cond_var.wait_for(&mut started, Duration::from_millis(500));
             if !wait_result.timed_out() {
                 debug!("id:{} - on_apply_command end wait_for with notification for index {}",self.config.id, index);
+                ApplyCommandResponse::new(ApplyCommandStatus::Ok)
             } else {
                 debug!("id:{} - on_apply_command after wait_for with timeout for index {}",self.config.id, index);
+                ApplyCommandResponse::new(ApplyCommandStatus::Pending { token: index as u64 })
             }
 
             //}
+        } else {
+            ApplyCommandResponse::new(ApplyCommandStatus::Ko)
         }
-
-        ApplyCommandResponse::new(ApplyCommandStatus::Ok)
     }
 
     pub fn manage_server_state(&self) {

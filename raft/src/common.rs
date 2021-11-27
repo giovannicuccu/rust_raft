@@ -155,12 +155,14 @@ pub struct ApplyCommandRequest {
     command: StateMachineCommand,
 }
 
+
 impl ApplyCommandRequest {
     pub fn new(command: StateMachineCommand) -> Self {
         ApplyCommandRequest { command }
     }
 }
 
+#[derive(Eq, PartialEq, Debug)]
 pub enum ApplyCommandStatus {
     Ok,
     Ko,

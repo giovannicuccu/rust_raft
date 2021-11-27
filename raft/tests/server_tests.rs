@@ -1,7 +1,7 @@
 use std::sync::mpsc::{Sender, Receiver, channel, RecvTimeoutError};
 use raft::{ServerConfig, RaftServer, RaftServerState};
 use raft::network::{ClientChannel, NetworkChannel, RaftClient};
-use raft::common::{AppendEntriesResponse, RequestVoteRequest, AppendEntriesRequest, RequestVoteResponse, ApplyCommandRequest, ApplyCommandResponse, StateMachineCommand};
+use raft::common::{AppendEntriesResponse, RequestVoteRequest, AppendEntriesRequest, RequestVoteResponse, ApplyCommandRequest, ApplyCommandResponse, StateMachineCommand, ApplyCommandStatus};
 use std::collections::HashMap;
 use std::sync::{Arc};
 
@@ -480,7 +480,10 @@ Se non raccolgo gli handle il programma finisce subito
     if client.is_some() {
         let apply_command_request=ApplyCommandRequest::new(StateMachineCommand::Put { key: "key".to_string(), value: "value".to_string() });
         debug!("Before sending apply command");
-        client.take().unwrap().apply_command(apply_command_request);
+        let apply_command_result=client.take().unwrap().apply_command(apply_command_request);
+        assert!(apply_command_result.is_ok());
+        assert_eq!(*apply_command_result.unwrap().status(),ApplyCommandStatus::Ok);
+        debug!("Apply Command is OK")
     } else {
         debug!("no Leader found")
     }
